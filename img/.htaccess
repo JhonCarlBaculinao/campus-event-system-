@@ -1,0 +1,10 @@
+# Prevent PHP/script execution in uploads directory
+<FilesMatch "\.(php|phtml|php3|php4|php5|phar|pl|py|cgi|sh|asp|aspx|jsp)$">
+    Require all denied
+</FilesMatch>
+
+# Force all files to be served as their actual type
+AddType text/plain .php .phtml .php3 .php4 .php5
+
+# Prevent directory listing
+Options -Indexes

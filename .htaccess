@@ -1,0 +1,27 @@
+# RMC Events — Apache Security Configuration
+
+# Enable rewrite engine
+RewriteEngine On
+
+# Block access to sensitive PHP files
+<FilesMatch "^(db_connect|csrf|send_email|lang|auth|email_templates|notifications_helper|qr_token|totp)\.php$">
+    Require all denied
+</FilesMatch>
+
+# Block access to SQL dumps and config files
+<FilesMatch "\.(sql|md|json|ini|env|log|bak|old|tmp)$">
+    Require all denied
+</FilesMatch>
+
+# Block access to config files in parent directories
+<IfModule mod_rewrite.c>
+    RewriteRule \.(sql|md|json|ini|env|log|bak|old|tmp)$ - [F,L]
+</IfModule>
+
+# Prevent directory listing
+Options -Indexes
+
+# Block access to hidden files
+<FilesMatch "^\.">
+    Require all denied
+</FilesMatch>
