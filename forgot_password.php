@@ -1,5 +1,4 @@
 <?php
-session_start();
 
 require 'db_connect.php';
 require 'send_email.php';
@@ -47,20 +46,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         |--------------------------------------------------------------------------
         */
 
-        $query = pg_query_params(
-            $conn,
-            "SELECT user_id, full_name, email
+        $query = $pdo->prepare("SELECT user_id, full_name, email
              FROM users
-             WHERE LOWER(email) = LOWER($1)
-             LIMIT 1",
-            [$email]
-        );
+             WHERE LOWER(email) = LOWER(?)
+             LIMIT 1");
+        $query->execute([$email]);
 
         if (!$query) {
 
             error_log(
                 "Forgot password lookup failed: " .
-                pg_last_error($conn)
+                ($pdo->errorInfo()[2] ?? '')
             );
 
             $error = t('request_process_error');
@@ -79,9 +75,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             rmc_rate_record_fail($conn, $rl_key, 3600);
 
-            if (pg_num_rows($query) > 0) {
+            if ($query->rowCount() > 0) {
 
-                $user = pg_fetch_assoc($query);
+                $user = $query->fetch(PDO::FETCH_ASSOC);
 
                 /*
                 |--------------------------------------------------------------------------
@@ -110,24 +106,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     time() + (30 * 60)
                 );
 
-                $update = pg_query_params(
-                    $conn,
-                    "UPDATE users
-                     SET reset_token = $1,
-                         reset_token_expiry = $2
-                     WHERE user_id = $3",
-                    [
-                        $token_hash,
-                        $expiry,
-                        $user['user_id']
-                    ]
-                );
+                $update = $pdo->prepare("UPDATE users
+                     SET reset_token = ?, reset_token_expiry = ?
+                     WHERE user_id = ?");
+                $update->execute([
+                    $token_hash,
+                    $expiry,
+                    $user['user_id']
+                ]);
 
                 if (!$update) {
 
                     error_log(
                         "Reset token update failed: " .
-                        pg_last_error($conn)
+                        ($pdo->errorInfo()[2] ?? '')
                     );
 
                 } else {
@@ -180,7 +172,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $reset_url
                     );
 
-                    $email_sent = send_email_deferred(
+                    $email_sent = send_notification_email(
                         $user['email'],
                         'Reset Your Regis Marie College Event System Password',
                         $email_message
@@ -297,7 +289,7 @@ include 'partials/head.php';
         <div class="text-center mt-6">
 
             <a
-                href="login.php"
+                    href="login.php"
                 class="font-semibold text-rmc-800 hover:text-rmc-900"
             >
 

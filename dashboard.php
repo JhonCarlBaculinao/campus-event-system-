@@ -1,16 +1,23 @@
 <?php
 
-session_start();
-
 require 'db_connect.php';
-require 'send_email.php';
-require 'lang.php';
-require 'csrf.php';
 
-if (!isset($_SESSION['user_id'])) {
-    header("Location: login.php");
-    exit();
+// Verify database connection was initialized
+if (!isset($pdo) || $pdo === null) {
+    error_log('Dashboard database connection was not initialized.');
+    die("Something went wrong. Please try again later.");
 }
+
+// Also ensure $conn alias exists for backward compatibility
+if (!isset($conn) || $conn === null) {
+    $conn = $pdo;
+}
+
+require 'send_email.php';
+
+require 'lang.php';
+
+require 'csrf.php';
 
 $full_name = $_SESSION['full_name'];
 $role      = $_SESSION['role'];
@@ -25,7 +32,7 @@ $first_name = explode(' ', trim($full_name))[0];
 
 if ($role === 'student') {
 
-    $reminder_query = "
+$reminder_query = "
         SELECT
             e.event_id,
             e.title,
@@ -33,31 +40,21 @@ if ($role === 'student') {
         FROM registrations r
         JOIN events e
             ON r.event_id = e.event_id
-        WHERE r.user_id = $1
+        WHERE r.user_id = ?
           AND e.status = 'approved'
           AND e.event_date BETWEEN CURRENT_DATE
-                               AND CURRENT_DATE + INTERVAL '2 days'
-          AND NOT EXISTS (
-                SELECT 1
-                FROM notifications n
-                WHERE n.user_id = $1
-                  AND n.type = 'event_reminder'
-                  AND n.message LIKE '%' || e.title || '%'
-          )
+                               AND CURRENT_DATE + INTERVAL 2 DAY
     ";
 
-    $reminder_result = pg_query_params(
-        $conn,
-        $reminder_query,
-        array($user_id)
-    );
+    $reminder_result = $pdo->prepare($reminder_query);
+    $reminder_result->execute(array($user_id));
 
     $student_email = null;
     $reminder_emails_sent = isset($_SESSION['reminder_emails_sent'])
         ? (int) $_SESSION['reminder_emails_sent']
         : 0;
 
-    while ($row = pg_fetch_assoc($reminder_result)) {
+    while ($row = $reminder_result->fetch(PDO::FETCH_ASSOC)) {
 
         $msg = 'Reminder: Your event "' .
             $row['title'] .
@@ -65,38 +62,13 @@ if ($role === 'student') {
             $row['event_date'] .
             '.';
 
-        pg_query_params(
-            $conn,
-            "INSERT INTO notifications
-            (
-                user_id,
-                type,
-                message,
-                is_read,
-                created_at
-            )
-            VALUES
-            (
-                $1,
-                'event_reminder',
-                $2,
-                false,
-                NOW()
-            )",
-            array($user_id, $msg)
-        );
+        /* INSERT INTO users is disabled - notifications table not in 5-table schema */
 
         if ($student_email === null) {
 
-            $u = pg_fetch_assoc(
-                pg_query_params(
-                    $conn,
-                    "SELECT email
-                     FROM users
-                     WHERE user_id = $1",
-                    array($user_id)
-                )
-            );
+            $u_stmt = $pdo->prepare("SELECT email FROM users WHERE user_id = ?");
+            $u_stmt->execute([$user_id]);
+            $u = $u_stmt->fetch(PDO::FETCH_ASSOC);
 
             $student_email = $u['email'] ?? '';
         }
@@ -106,7 +78,7 @@ if ($role === 'student') {
             $reminder_emails_sent < 10
         ) {
 
-            send_email_deferred(
+            send_notification_email(
                 $student_email,
                 "Event Reminder",
                 "<h2>Event Reminder</h2>
@@ -144,42 +116,25 @@ if ($role === 'organizer' && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_PO
     $cancelled = 0;
     $failed    = 0;
 
-    foreach ($ids as $eid) {
+foreach ($ids as $eid) {
 
-        $chk = pg_query_params(
-            $conn,
-            "SELECT event_id, title, status
-             FROM events
-             WHERE event_id = $1
-               AND organizer_id = $2",
-            array($eid, $user_id)
-        );
+        $chk = $pdo->prepare("SELECT event_id, title, status
+              FROM events
+              WHERE event_id = ?
+                AND organizer_id = ?");
+        $chk->execute(array($eid, $user_id));
 
-        if (!$chk || pg_num_rows($chk) === 0) { $failed++; continue; }
+        if (!$chk || $chk->rowCount() === 0) { $failed++; continue; }
 
-        $ev = pg_fetch_assoc($chk);
+        $ev = $chk->fetch(PDO::FETCH_ASSOC);
 
         if ($ev['status'] !== 'approved') { $failed++; continue; }
 
-        pg_query_params(
-            $conn,
-            "UPDATE events SET status = 'cancelled' WHERE event_id = $1",
-            array($eid)
-        );
+        $pdo->prepare("UPDATE events SET status = 'cancelled' WHERE event_id = ?")->execute(array($eid));
 
-        pg_query_params(
-            $conn,
-            "UPDATE registrations SET status = 'cancelled' WHERE event_id = $1",
-            array($eid)
-        );
+        $pdo->prepare("UPDATE registrations SET status = 'cancelled' WHERE event_id = ?")->execute(array($eid));
 
-        pg_query_params(
-            $conn,
-            "INSERT INTO notifications (user_id, type, message, is_read, created_at)
-             SELECT user_id, 'event_cancelled', 'The event \"' || $2 || '\" has been cancelled.', false, NOW()
-             FROM registrations WHERE event_id = $1",
-            array($eid, $ev['title'])
-        );
+        /* Record the cancellation notification - disabled: notifications table not in 5-table schema */
 
         $cancelled++;
     }
@@ -203,15 +158,11 @@ $student_profile = null;
 
 if ($role === 'student') {
 
-    $student_profile = pg_fetch_assoc(
-        pg_query_params(
-            $conn,
-            "SELECT full_name, student_id, department, email
-             FROM users
-             WHERE user_id = $1",
-            array($user_id)
-        )
-    );
+$stmt = $pdo->prepare("SELECT full_name, student_id, department, email
+                  FROM users
+                  WHERE user_id = ?");
+$stmt->execute([$user_id]);
+$student_profile = $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
 }
 
 
@@ -242,31 +193,23 @@ $upcoming_events = null;
 
 if ($role === "student") {
 
-    $r = pg_query(
-        $conn,
-        "SELECT COUNT(*)
+    $r = $pdo->query("SELECT COUNT(*)
          FROM events
          WHERE status = 'approved'
-           AND event_date >= CURRENT_DATE"
-    );
+           AND event_date >= CURRENT_DATE");
 
-    $stats['events'] = (int) pg_fetch_result($r, 0, 0);
+    $stats['events'] = (int)(($r->fetch(PDO::FETCH_NUM) ?: [0])[0]);
 
 
-    $r = pg_query_params(
-        $conn,
-        "SELECT COUNT(*)
+    $r = $pdo->prepare("SELECT COUNT(*)
          FROM registrations
-         WHERE user_id = $1",
-        array($user_id)
-    );
+         WHERE user_id = ?");
+    $r->execute(array($user_id));
 
-    $stats['registrations'] = (int) pg_fetch_result($r, 0, 0);
+    $stats['registrations'] = (int)(($r->fetch(PDO::FETCH_NUM) ?: [0])[0]);
 
 
-    $upcoming_events = pg_query_params(
-        $conn,
-        "SELECT
+    $upcoming_events = $pdo->prepare("SELECT
             e.event_id,
             e.title,
             e.category,
@@ -287,7 +230,7 @@ if ($role === "student") {
                     SELECT 1
                     FROM registrations r3
                     WHERE r3.event_id = e.event_id
-                      AND r3.user_id = $1
+                      AND r3.user_id = ?
                 )
                 THEN true
                 ELSE false
@@ -302,9 +245,8 @@ if ($role === "student") {
             e.event_date ASC,
             e.start_time ASC
 
-         LIMIT 5",
-        array($user_id)
-    );
+         LIMIT 5");
+    $upcoming_events->execute(array($user_id));
 }
 
 
@@ -314,44 +256,34 @@ if ($role === "student") {
 
 elseif ($role === "organizer") {
 
-    $r = pg_query_params(
-        $conn,
-        "SELECT COUNT(*)
+    $r = $pdo->prepare("SELECT COUNT(*)
          FROM events
-         WHERE organizer_id = $1
-           AND status != 'deleted'",
-        array($user_id)
-    );
+         WHERE organizer_id = ?
+           AND status != 'deleted'");
+    $r->execute(array($user_id));
 
-    $stats['events'] = (int) pg_fetch_result($r, 0, 0);
+    $stats['events'] = (int)(($r->fetch(PDO::FETCH_NUM) ?: [0])[0]);
 
 
-    $r = pg_query_params(
-        $conn,
-        "SELECT COUNT(r.registration_id)
+    $r = $pdo->prepare("SELECT COUNT(r.registration_id)
          FROM registrations r
-         JOIN events e
-           ON r.event_id = e.event_id
-         WHERE e.organizer_id = $1",
-        array($user_id)
-    );
+         JOIN events e ON r.event_id = e.event_id
+         WHERE e.organizer_id = ?
+           AND r.status = 'registered'");
+    $r->execute(array($user_id));
 
-    $stats['participants'] = (int) pg_fetch_result($r, 0, 0);
+    $stats['participants'] = (int)(($r->fetch(PDO::FETCH_NUM) ?: [0])[0]);
 
 
-    $r = pg_query_params(
-        $conn,
-        "SELECT COUNT(a.attendance_id)
+    $att = $pdo->prepare("SELECT COUNT(DISTINCT a.registration_id)
          FROM attendance a
-         JOIN registrations r
-           ON a.registration_id = r.registration_id
-         JOIN events e
-           ON r.event_id = e.event_id
-         WHERE e.organizer_id = $1",
-        array($user_id)
-    );
-
-    $stats['attended'] = (int) pg_fetch_result($r, 0, 0);
+         JOIN registrations r ON a.registration_id = r.registration_id
+         JOIN events e ON r.event_id = e.event_id
+         WHERE e.organizer_id = ?
+           AND a.verified = 1
+           AND r.status = 'registered'");
+    $att->execute([$user_id]);
+    $stats['attended'] = (int) $att->fetchColumn();
 
 
     $stats['attendance_rate'] =
@@ -363,33 +295,27 @@ elseif ($role === "organizer") {
         : 0;
 
 
-    $r = pg_query_params(
-        $conn,
-        "SELECT COUNT(*)
+    $r = $pdo->prepare("SELECT COUNT(*)
          FROM events
-         WHERE organizer_id = $1
+         WHERE organizer_id = ?
            AND status = 'approved'
-           AND event_date >= CURRENT_DATE",
-        array($user_id)
-    );
+           AND event_date >= CURRENT_DATE");
+    $r->execute(array($user_id));
 
-    $stats['upcoming'] = (int) pg_fetch_result($r, 0, 0);
+    $stats['upcoming'] = (int)(($r->fetch(PDO::FETCH_NUM) ?: [0])[0]);
 
 
-    $my_events = pg_query_params(
-        $conn,
-        "SELECT
+    $my_events = $pdo->prepare("SELECT
             event_id,
             title,
             event_date,
             venue,
             status
          FROM events
-         WHERE organizer_id = $1
+         WHERE organizer_id = ?
            AND status != 'deleted'
-         ORDER BY event_date DESC",
-        array($user_id)
-    );
+         ORDER BY event_date DESC");
+    $my_events->execute(array($user_id));
 }
 
 
@@ -399,42 +325,31 @@ elseif ($role === "organizer") {
 
 elseif ($role === "admin") {
 
-    $r = pg_query(
-        $conn,
-        "SELECT COUNT(*)
+    $r = $pdo->query("SELECT COUNT(*)
          FROM events
-         WHERE status != 'deleted'"
-    );
+         WHERE status != 'deleted'");
 
-    $stats['events'] = (int) pg_fetch_result($r, 0, 0);
+    $stats['events'] = (int)(($r->fetch(PDO::FETCH_NUM) ?: [0])[0]);
 
 
-    $r = pg_query(
-        $conn,
-        "SELECT COUNT(*)
+    $r = $pdo->query("SELECT COUNT(*)
          FROM events
-         WHERE status = 'pending'"
-    );
+         WHERE status = 'pending'");
 
-    $stats['pending'] = (int) pg_fetch_result($r, 0, 0);
-
-
-    $r = pg_query(
-        $conn,
-        "SELECT COUNT(*)
-         FROM registrations"
-    );
-
-    $stats['participants'] = (int) pg_fetch_result($r, 0, 0);
+    $stats['pending'] = (int)(($r->fetch(PDO::FETCH_NUM) ?: [0])[0]);
 
 
-    $r = pg_query(
-        $conn,
-        "SELECT COUNT(*)
-         FROM attendance"
-    );
+    $r = $pdo->query("SELECT COUNT(*) FROM registrations WHERE status = 'registered'");
 
-    $stats['attended'] = (int) pg_fetch_result($r, 0, 0);
+    $stats['participants'] = (int)(($r->fetch(PDO::FETCH_NUM) ?: [0])[0]);
+
+
+    $r = $pdo->query("SELECT COUNT(DISTINCT a.registration_id)
+         FROM attendance a
+         JOIN registrations r ON a.registration_id = r.registration_id
+         WHERE a.verified = 1
+           AND r.status = 'registered'");
+    $stats['attended'] = (int) $r->fetchColumn();
 
 
     $stats['attendance_rate'] =
@@ -446,46 +361,31 @@ elseif ($role === "admin") {
         : 0;
 
 
-    $r = pg_query(
-        $conn,
-        "SELECT COUNT(*)
+    $r = $pdo->query("SELECT COUNT(*)
          FROM events
          WHERE status = 'approved'
-           AND event_date >= CURRENT_DATE"
-    );
+           AND event_date >= CURRENT_DATE");
 
-    $stats['upcoming'] = (int) pg_fetch_result($r, 0, 0);
+    $stats['upcoming'] = (int)(($r->fetch(PDO::FETCH_NUM) ?: [0])[0]);
 }
 
 
 /* =========================================================
-   UNREAD NOTIFICATIONS
+   UNREAD + RECENT NOTIFICATIONS (ALL ROLES)
+   ========================================================= |
+   Previously this only ran for students, so the header bell always
+   showed 0 / empty for admin and organizer even though the bell's
+   click handler itself was working fine. Now every role gets its
+   real unread count and recent notifications, same as reports.php
+   and admin_users.php already do.
    ========================================================= */
 
-$r = pg_query_params(
-    $conn,
-    "SELECT COUNT(*)
-     FROM notifications
-     WHERE user_id = $1
-       AND is_read = false",
-    array($user_id)
-);
+$notif_stmt = $pdo->prepare("SELECT COUNT(*) FROM notifications WHERE user_id = ? AND is_read = 0");
+$notif_stmt->execute([$user_id]);
+$stats['notifications'] = (int) $notif_stmt->fetchColumn();
 
-$stats['notifications'] = (int) pg_fetch_result($r, 0, 0);
-
-/* =========================================================
-   RECENT NOTIFICATIONS
-   ========================================================= */
-
-$recent_notifications = pg_query_params(
-    $conn,
-    "SELECT notification_id, type, message, is_read, created_at
-     FROM notifications
-     WHERE user_id = $1
-     ORDER BY created_at DESC
-     LIMIT 5",
-    array($user_id)
-);
+$recent_notifications = $pdo->prepare("SELECT notification_id, type, message, is_read, created_at FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 5");
+$recent_notifications->execute([$user_id]);
 
 
 /* =========================================================
@@ -875,6 +775,8 @@ $active_page = 'dashboard';
 
     </section>
 
+</div>
+
     <?php else: ?>
 
 <!-- =========================================================
@@ -944,88 +846,82 @@ $active_page = 'dashboard';
                     <?php if ($role === 'student'): ?>
 
 
-                        <a
-                            href="events.php"
-                            class="inline-flex items-center gap-2 bg-rmc-800 hover:bg-rmc-900 text-white px-5 py-3 rounded-xl font-semibold text-sm transition shadow-lg shadow-rmc-950/10"
-                        >
+                        <a href="events.php"
+                         class="inline-flex items-center gap-2 bg-rmc-800 hover:bg-rmc-900 text-white px-5 py-3 rounded-xl font-semibold text-sm transition shadow-lg shadow-rmc-950/10"
+                         >
+ 
+                             <i class="fa-solid fa-calendar-days"></i>
+ 
+                             Browse Events
+ 
+                             <i class="fa-solid fa-arrow-right text-xs"></i>
+ 
+                         </a>
 
-                            <i class="fa-solid fa-calendar-days"></i>
 
-                            Browse Events
-
-                            <i class="fa-solid fa-arrow-right text-xs"></i>
-
-                        </a>
-
-
-                        <a
-                            href="calendar.php"
-                            class="inline-flex items-center gap-2 bg-white hover:bg-rmc-50 border border-rmc-200 text-rmc-800 px-5 py-3 rounded-xl font-semibold text-sm transition"
-                        >
-
-                            <i class="fa-regular fa-calendar"></i>
-
-                            View Calendar
-
-                        </a>
+                        <a href="calendar.php"
+                         class="inline-flex items-center gap-2 bg-white hover:bg-rmc-50 border border-rmc-200 text-rmc-800 px-5 py-3 rounded-xl font-semibold text-sm transition"
+                         >
+ 
+                             <i class="fa-regular fa-calendar"></i>
+ 
+                             View Calendar
+ 
+                         </a>
 
 
                     <?php elseif ($role === 'organizer'): ?>
 
 
-                        <a
-                            href="create_event.php"
-                            class="inline-flex items-center gap-2 bg-rmc-800 hover:bg-rmc-900 text-white px-5 py-3 rounded-xl font-semibold text-sm transition"
-                        >
+                        <a href="create_event.php"
+                         class="inline-flex items-center gap-2 bg-rmc-800 hover:bg-rmc-900 text-white px-5 py-3 rounded-xl font-semibold text-sm transition"
+                         >
 
-                            <i class="fa-solid fa-plus"></i>
+                     <i class="fa-solid fa-plus"></i>
 
-                            Create Event
+                     Create Event
 
-                            <i class="fa-solid fa-arrow-right text-xs"></i>
+                     <i class="fa-solid fa-arrow-right text-xs"></i>
 
-                        </a>
+                 </a>
 
 
-                        <a
-                            href="reports.php"
-                            class="inline-flex items-center gap-2 bg-white hover:bg-rmc-50 border border-rmc-200 text-rmc-800 px-5 py-3 rounded-xl font-semibold text-sm transition"
-                        >
+                        <a href="reports.php"
+                         class="inline-flex items-center gap-2 bg-white hover:bg-rmc-50 border border-rmc-200 text-rmc-800 px-5 py-3 rounded-xl font-semibold text-sm transition"
+                         >
 
-                            <i class="fa-solid fa-chart-column"></i>
+                     <i class="fa-solid fa-chart-column"></i>
 
-                            View Analytics
+                     View Analytics
 
-                        </a>
+                 </a>
 
 
                     <?php else: ?>
 
 
-                        <a
-                            href="admin_events.php"
-                            class="inline-flex items-center gap-2 bg-rmc-800 hover:bg-rmc-900 text-white px-5 py-3 rounded-xl font-semibold text-sm transition"
-                        >
+                        <a href="admin_events.php"
+                         class="inline-flex items-center gap-2 bg-rmc-800 hover:bg-rmc-900 text-white px-5 py-3 rounded-xl font-semibold text-sm transition"
+                         >
 
-                            <i class="fa-solid fa-calendar-check"></i>
+                     <i class="fa-solid fa-calendar-check"></i>
 
-                            Manage Events
+                     Manage Events
 
-                            <i class="fa-solid fa-arrow-right text-xs"></i>
+                     <i class="fa-solid fa-arrow-right text-xs"></i>
 
-                        </a>
+                 </a>
 
 
-                        <a
-                            href="reports.php"
-                            class="inline-flex items-center gap-2 bg-white hover:bg-rmc-50 border border-rmc-200 text-rmc-800 px-5 py-3 rounded-xl font-semibold text-sm transition"
-                        >
+                        <a href="reports.php"
+                         class="inline-flex items-center gap-2 bg-white hover:bg-rmc-50 border border-rmc-200 text-rmc-800 px-5 py-3 rounded-xl font-semibold text-sm transition"
+                         >
 
-                            <i class="fa-solid fa-chart-pie"></i>
+                     <i class="fa-solid fa-chart-pie"></i>
 
-                            View Analytics
+                     View Analytics
 
-                        </a>
+                 </a>
 
 
                     <?php endif; ?>
@@ -1222,9 +1118,9 @@ $active_page = 'dashboard';
      EVENTS
      ========================================================= -->
 
-<a
-    href="<?= $role === 'student' ? 'events.php' : 'admin_events.php'; ?>"
-    class="stat-card block bg-white border border-slate-200 rounded-2xl p-5 sm:p-6 animate-up delay-1 hover:border-rmc-300 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-rmc-500 focus:ring-offset-2 transition group"
+
+<a href="<?= $role === 'student' ? 'events.php' : 'admin_events.php'; ?>"
+     class="stat-card block bg-white border border-slate-200 rounded-2xl p-5 sm:p-6 animate-up delay-1 hover:border-rmc-300 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-rmc-500 focus:ring-offset-2 transition group"
 >
 
     <div class="flex items-start justify-between">
@@ -1409,16 +1305,15 @@ $active_page = 'dashboard';
     </div>
 
 
-    <a
-        href="my_qr.php"
-        class="inline-flex items-center gap-2 mt-4 text-sm font-semibold text-rmc-800 hover:text-rmc-900"
-    >
-
-        View My QR
-
-        <i class="fa-solid fa-arrow-right text-xs"></i>
-
-    </a>
+        <a href="my_qr.php"
+                         class="inline-flex items-center gap-2 mt-4 text-sm font-semibold text-rmc-800 hover:text-rmc-900"
+                         >
+ 
+         View My QR
+ 
+         <i class="fa-solid fa-arrow-right text-xs"></i>
+ 
+     </a>
 
 </div>
 
@@ -1428,9 +1323,9 @@ $active_page = 'dashboard';
 
 <!-- PARTICIPANTS -->
 
-<a
-    href="reports.php"
-    class="stat-card block bg-white border border-slate-200 rounded-2xl p-5 sm:p-6 animate-up delay-2 hover:border-rmc-300 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-rmc-500 focus:ring-offset-2 transition group"
+
+<a href="reports.php"
+     class="stat-card block bg-white border border-slate-200 rounded-2xl p-5 sm:p-6 animate-up delay-2 hover:border-rmc-300 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-rmc-500 focus:ring-offset-2 transition group"
 >
 
     <div class="flex items-start justify-between">
@@ -1471,9 +1366,9 @@ $active_page = 'dashboard';
 
 <!-- ATTENDANCE -->
 
-<a
-    href="reports.php"
-    class="stat-card block bg-white border border-slate-200 rounded-2xl p-5 sm:p-6 animate-up delay-3 hover:border-rmc-300 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-rmc-500 focus:ring-offset-2 transition group"
+
+<a href="reports.php"
+     class="stat-card block bg-white border border-slate-200 rounded-2xl p-5 sm:p-6 animate-up delay-3 hover:border-rmc-300 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-rmc-500 focus:ring-offset-2 transition group"
 >
 
     <div class="flex items-start justify-between">
@@ -1537,9 +1432,9 @@ $active_page = 'dashboard';
 
 <!-- UPCOMING -->
 
-<a
-    href="reports.php"
-    class="stat-card block bg-white border border-slate-200 rounded-2xl p-5 sm:p-6 animate-up delay-4 hover:border-rmc-300 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-rmc-500 focus:ring-offset-2 transition group"
+
+<a href="reports.php"
+     class="stat-card block bg-white border border-slate-200 rounded-2xl p-5 sm:p-6 animate-up delay-4 hover:border-rmc-300 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-rmc-500 focus:ring-offset-2 transition group"
 >
 
     <div class="flex items-start justify-between">
@@ -1583,9 +1478,9 @@ $active_page = 'dashboard';
 
 <!-- PENDING -->
 
-<a
-    href="admin_events.php?filter=pending"
-    class="stat-card block bg-white border border-slate-200 rounded-2xl p-5 sm:p-6 animate-up delay-2 hover:border-rmc-300 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-rmc-500 focus:ring-offset-2 transition group"
+
+<a href="admin_events.php?filter=pending"
+     class="stat-card block bg-white border border-slate-200 rounded-2xl p-5 sm:p-6 animate-up delay-2 hover:border-rmc-300 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-rmc-500 focus:ring-offset-2 transition group"
 >
 
     <div class="flex items-start justify-between">
@@ -1626,9 +1521,9 @@ $active_page = 'dashboard';
 
 <!-- PARTICIPANTS -->
 
-<a
-    href="admin_users.php"
-    class="stat-card block bg-white border border-slate-200 rounded-2xl p-5 sm:p-6 animate-up delay-3 hover:border-rmc-300 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-rmc-500 focus:ring-offset-2 transition group"
+
+<a href="admin_users.php"
+     class="stat-card block bg-white border border-slate-200 rounded-2xl p-5 sm:p-6 animate-up delay-3 hover:border-rmc-300 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-rmc-500 focus:ring-offset-2 transition group"
 >
 
     <div class="flex items-start justify-between">
@@ -1669,9 +1564,9 @@ $active_page = 'dashboard';
 
 <!-- ATTENDANCE -->
 
-<a
-    href="reports.php"
-    class="stat-card block bg-white border border-slate-200 rounded-2xl p-5 sm:p-6 animate-up delay-4 hover:border-rmc-300 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-rmc-500 focus:ring-offset-2 transition group"
+
+<a href="reports.php"
+     class="stat-card block bg-white border border-slate-200 rounded-2xl p-5 sm:p-6 animate-up delay-4 hover:border-rmc-300 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-rmc-500 focus:ring-offset-2 transition group"
 >
 
     <div class="flex items-start justify-between">
@@ -1735,9 +1630,9 @@ $active_page = 'dashboard';
 
 <!-- UPCOMING -->
 
-<a
-    href="admin_events.php?filter=approved"
-    class="stat-card block bg-white border border-slate-200 rounded-2xl p-5 sm:p-6 animate-up delay-4 hover:border-rmc-300 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-rmc-500 focus:ring-offset-2 transition group"
+
+<a href="admin_events.php?filter=approved"
+     class="stat-card block bg-white border border-slate-200 rounded-2xl p-5 sm:p-6 animate-up delay-4 hover:border-rmc-300 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-rmc-500 focus:ring-offset-2 transition group"
 >
 
     <div class="flex items-start justify-between">
@@ -1832,27 +1727,26 @@ $active_page = 'dashboard';
         </div>
 
 
-        <a
-            href="events.php"
-            class="inline-flex items-center gap-2 text-sm font-semibold text-rmc-800 hover:text-rmc-900"
-        >
+        <a href="events.php"
+                         class="inline-flex items-center gap-2 text-sm font-semibold text-rmc-800 hover:text-rmc-900"
+                         >
 
-            View All Events
+             View All Events
 
-            <i class="fa-solid fa-arrow-right text-xs"></i>
+             <i class="fa-solid fa-arrow-right text-xs"></i>
 
-        </a>
+         </a>
 
     </div>
 
 
-    <?php if ($upcoming_events && pg_num_rows($upcoming_events) > 0): ?>
+    <?php if ($upcoming_events && $upcoming_events->rowCount() > 0): ?>
 
 
         <div class="space-y-4">
 
 
-            <?php while ($event = pg_fetch_assoc($upcoming_events)): ?>
+            <?php while ($event = $upcoming_events->fetch(PDO::FETCH_ASSOC)): ?>
 
 
                 <?php
@@ -1863,9 +1757,7 @@ $active_page = 'dashboard';
                 $registration_limit =
                     (int) $event['registration_limit'];
 
-                $is_registered =
-                    ($event['is_registered'] === 't' ||
-                     $event['is_registered'] === true);
+                $is_registered = !empty($event['is_registered']);
 
                 $registration_status =
                     upcoming_registration_status(
@@ -2159,7 +2051,7 @@ $active_page = 'dashboard';
 
 
                                 <a
-                                    href="events.php"
+                                        href="events.php"
                                     class="flex-1 inline-flex items-center justify-center gap-2 bg-slate-900 hover:bg-slate-800 text-white px-4 py-2.5 rounded-xl text-xs font-bold transition"
                                 >
 
@@ -2174,7 +2066,7 @@ $active_page = 'dashboard';
 
 
                                     <a
-                                        href="my_qr.php"
+                                            href="my_qr.php"
                                         class="inline-flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2.5 rounded-xl text-xs font-bold transition"
                                         title="View QR"
                                     >
@@ -2191,7 +2083,7 @@ $active_page = 'dashboard';
 
 
                                     <a
-                                        href="events.php"
+                                            href="events.php"
                                         class="inline-flex items-center justify-center gap-2 bg-rmc-800 hover:bg-rmc-900 text-white px-4 py-2.5 rounded-xl text-xs font-bold transition"
                                     >
 
@@ -2255,7 +2147,7 @@ $active_page = 'dashboard';
 
 
             <a
-                href="events.php"
+                    href="events.php"
                 class="inline-flex items-center gap-2 mt-5 bg-rmc-800 hover:bg-rmc-900 text-white px-5 py-2.5 rounded-xl text-sm font-semibold transition"
             >
 
@@ -2321,7 +2213,7 @@ $active_page = 'dashboard';
 
 
         <a
-            href="create_event.php"
+                href="create_event.php"
             class="inline-flex items-center justify-center gap-2 bg-rmc-800 hover:bg-rmc-900 text-white px-5 py-2.5 rounded-xl text-sm font-semibold transition"
         >
 
@@ -2334,7 +2226,7 @@ $active_page = 'dashboard';
     </div>
 
 
-    <?php if ($my_events && pg_num_rows($my_events) > 0): ?>
+    <?php if ($my_events && $my_events->rowCount() > 0): ?>
 
         <form method="POST" id="bulkCancelForm">
             <?= csrf_field(); ?>
@@ -2344,7 +2236,7 @@ $active_page = 'dashboard';
                     <i class="fa-solid fa-triangle-exclamation text-red-600"></i>
                     <span class="text-sm font-semibold text-red-800"><span id="bulkCancelCount">0</span> <?= t('selected_count'); ?></span>
                 </div>
-                <button type="button" onclick="openConfirmModal({bulkForm: document.getElementById('bulkCancelForm'), title: <?= json_encode(t('bulk_cancel_confirm_title') ?: 'Cancel Events') ?>, message: <?= json_encode(t('bulk_cancel_confirm_msg') ?: 'Are you sure you want to cancel the selected events? This cannot be undone.') ?>, itemName: '<?= t('selected_events') ?>', itemLabel: <?= json_encode(t('event')) ?>, actionText: <?= json_encode(t('cancel')) ?>, color: 'red', icon: 'fa-solid fa-xmark'});"
+                <button type="button" onclick="openConfirmModal({bulkForm: document.getElementById('bulkCancelForm'), title: <?= htmlspecialchars(json_encode(t('bulk_cancel_confirm_title') ?: 'Cancel Events'), ENT_QUOTES) ?>, message: <?= htmlspecialchars(json_encode(t('bulk_cancel_confirm_msg') ?: 'Are you sure you want to cancel the selected events? This cannot be undone.'), ENT_QUOTES) ?>, itemName: <?= htmlspecialchars(json_encode(t('selected_events')), ENT_QUOTES) ?>, itemLabel: <?= htmlspecialchars(json_encode(t('event')), ENT_QUOTES) ?>, actionText: <?= htmlspecialchars(json_encode(t('cancel')), ENT_QUOTES) ?>, color: 'red', icon: 'fa-solid fa-xmark'});"
                     class="inline-flex items-center gap-2 bg-red-700 hover:bg-red-800 text-white px-4 py-2 rounded-xl text-sm font-semibold transition">
                     <i class="fa-solid fa-xmark"></i>
                     <?= t('cancel_events'); ?>
@@ -2363,7 +2255,7 @@ $active_page = 'dashboard';
                     >
 
                         <th class="px-4 py-4 text-center w-12">
-                            <input type="checkbox" id="selectAllEvents" class="bulk-select-all w-4 h-4 rounded border-slate-300 text-rmc-800 focus:ring-rmc-500 cursor-pointer" aria-label="<?= t('select_all'); ?>" data-target="event-row-cb">
+                            <input type="checkbox" id="selectAllEvents" form="bulkCancelForm" class="bulk-select-all w-4 h-4 rounded border-slate-300 text-rmc-800 focus:ring-rmc-500 cursor-pointer" aria-label="<?= t('select_all'); ?>" data-target="event-row-cb">
                         </th>
 
                         <th class="px-4 py-4 text-left">
@@ -2394,7 +2286,7 @@ $active_page = 'dashboard';
                 <tbody>
 
 
-                    <?php while ($ev = pg_fetch_assoc($my_events)): ?>
+                    <?php while ($ev = $my_events->fetch(PDO::FETCH_ASSOC)): ?>
 
 
                         <tr
@@ -2405,7 +2297,7 @@ $active_page = 'dashboard';
 
                             <td class="px-4 py-4 text-center">
                                 <?php if ($ev['status'] === 'approved'): ?>
-                                <input type="checkbox" name="bulk_cancel_ids[]" value="<?= $ev['event_id']; ?>" class="bulk-cb event-row-cb w-4 h-4 rounded border-slate-300 text-rmc-800 focus:ring-rmc-500 cursor-pointer" aria-label="<?= t('select_event'); ?>">
+                                <input type="checkbox" name="bulk_cancel_ids[]" value="<?= $ev['event_id']; ?>" form="bulkCancelForm" class="bulk-cb event-row-cb w-4 h-4 rounded border-slate-300 text-rmc-800 focus:ring-rmc-500 cursor-pointer" aria-label="<?= t('select_event'); ?>">
                                 <?php endif; ?>
                             </td>
 
@@ -2460,7 +2352,7 @@ $active_page = 'dashboard';
 
 
                                         <a
-                                            href="edit_event.php?id=<?= $ev['event_id']; ?>"
+                                                href="edit_event.php?id=<?= $ev['event_id']; ?>"
                                             class="inline-flex items-center gap-2 bg-rmc-800 hover:bg-rmc-900 text-white px-3 py-2 rounded-lg text-xs font-semibold transition"
                                         >
 
@@ -2472,7 +2364,7 @@ $active_page = 'dashboard';
 
 
                                         <a
-                                            href="manage_photos.php?id=<?= $ev['event_id']; ?>"
+                                                href="manage_photos.php?id=<?= $ev['event_id']; ?>"
                                             class="inline-flex items-center gap-2 bg-slate-800 hover:bg-slate-700 text-white px-3 py-2 rounded-lg text-xs font-semibold transition"
                                         >
 
@@ -2504,7 +2396,7 @@ $active_page = 'dashboard';
                                                 <button
                                                     type="button"
                                                     class="inline-flex items-center gap-2 bg-red-600 hover:bg-red-700 text-white px-3 py-2 rounded-lg text-xs font-semibold transition"
-                                                    onclick="openConfirmModal({form: this.closest('form'), title: <?= json_encode(t('cancel')) ?>, message: <?= json_encode(t('cancel_event_confirm')) ?>, itemName: <?= json_encode(htmlspecialchars($ev['title'], ENT_QUOTES)) ?>, itemLabel: <?= json_encode(t('event')) ?>, actionText: <?= json_encode(t('cancel')) ?>, color: 'red', icon: 'fa-solid fa-xmark'});"
+                                                    onclick="openConfirmModal({form: this.closest('form'), title: <?= htmlspecialchars(json_encode(t('cancel')), ENT_QUOTES) ?>, message: <?= htmlspecialchars(json_encode(t('cancel_event_confirm')), ENT_QUOTES) ?>, itemName: <?= htmlspecialchars(json_encode($ev['title']), ENT_QUOTES) ?>, itemLabel: <?= htmlspecialchars(json_encode(t('event')), ENT_QUOTES) ?>, actionText: <?= htmlspecialchars(json_encode(t('cancel')), ENT_QUOTES) ?>, color: 'red', icon: 'fa-solid fa-xmark'});"
                                                 >
 
                                                     <i class="fa-solid fa-xmark"></i>
@@ -2546,8 +2438,6 @@ $active_page = 'dashboard';
 
         </div>
 
-        </form>
-
     <?php else: ?>
 
 
@@ -2568,7 +2458,7 @@ $active_page = 'dashboard';
 
 
             <a
-                href="create_event.php"
+                    href="create_event.php"
                 class="inline-flex items-center gap-2 mt-5 bg-rmc-800 hover:bg-rmc-900 text-white px-5 py-2.5 rounded-xl text-sm font-semibold"
             >
 
@@ -2637,7 +2527,7 @@ $active_page = 'dashboard';
         <!-- MANAGE EVENTS -->
 
         <a
-            href="admin_events.php"
+                href="admin_events.php"
             class="quick-card group border border-slate-200 rounded-2xl p-5 hover:border-rmc-300 transition"
         >
 
@@ -2673,7 +2563,7 @@ $active_page = 'dashboard';
         <!-- USERS -->
 
         <a
-            href="admin_users.php"
+                href="admin_users.php"
             class="quick-card group border border-slate-200 rounded-2xl p-5 hover:border-rmc-300 transition"
         >
 
@@ -2709,7 +2599,7 @@ $active_page = 'dashboard';
         <!-- REPORTS -->
 
         <a
-            href="reports.php"
+                href="reports.php"
             class="quick-card group border border-slate-200 rounded-2xl p-5 hover:border-emerald-300 transition"
         >
 
@@ -2745,7 +2635,7 @@ $active_page = 'dashboard';
         <!-- EMAIL LOGS -->
 
         <a
-            href="admin_email_logs.php"
+                href="admin_email_logs.php"
             class="quick-card group border border-slate-200 rounded-2xl p-5 hover:border-red-300 transition"
         >
 
@@ -2859,6 +2749,7 @@ $active_page = 'dashboard';
     </div>
 
 </div>
+
 
 
 <script>
@@ -2986,5 +2877,6 @@ document.addEventListener('keydown', function (event) {
 </script>
 
 
-<?php include 'partials/footer.php'; ?>
 
+
+<?php include 'partials/footer.php'; ?>

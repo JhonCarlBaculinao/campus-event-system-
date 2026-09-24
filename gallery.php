@@ -1,5 +1,4 @@
 <?php
-session_start();
 include 'db_connect.php';
 require 'lang.php';
 
@@ -14,40 +13,31 @@ $user_id = $_SESSION['user_id'];
 $full_name = $_SESSION['full_name'] ?? '';
 $first_name = explode(' ', trim($full_name))[0];
 
-$event = pg_fetch_assoc(pg_query_params($conn, "SELECT * FROM events WHERE event_id=$1", array($event_id)));
+$event_stmt = $pdo->prepare("SELECT * FROM events WHERE event_id=?");
+$event_stmt->execute([$event_id]);
+$event = $event_stmt->fetch(PDO::FETCH_ASSOC);
+
 if (!$event) {
     die("Event not found.");
 }
 
-$photos = pg_query_params($conn, "SELECT * FROM event_photos WHERE event_id=$1 ORDER BY uploaded_at DESC", array($event_id));
+$photos = $pdo->prepare("SELECT * FROM event_photos WHERE event_id=? ORDER BY uploaded_at DESC");
+$photos->execute([$event_id]);
 
 
 /* =========================================================
    UNREAD COUNT + RECENT NOTIFICATIONS (shared header)
    ========================================================= */
 
-$unread_count = (int) pg_fetch_result(
-    pg_query_params(
-        $conn,
-        "SELECT COUNT(*)
+$unread_stmt = $pdo->prepare("SELECT COUNT(*)
          FROM notifications
-         WHERE user_id = $1
-           AND is_read = false",
-        array($user_id)
-    ),
-    0,
-    0
-);
+         WHERE user_id = ?
+           AND is_read = 0");
+$unread_stmt->execute([$user_id]);
+$unread_count = (int) $unread_stmt->fetchColumn();
 
-$recent_notifications = pg_query_params(
-    $conn,
-    "SELECT notification_id, type, message, is_read, created_at
-     FROM notifications
-     WHERE user_id = $1
-     ORDER BY created_at DESC
-     LIMIT 5",
-    array($user_id)
-);
+$recent_notifications = $pdo->prepare("SELECT notification_id, type, message, is_read, created_at FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 5");
+$recent_notifications->execute([$user_id]);
 
 
 /* =========================================================
@@ -123,7 +113,7 @@ $active_page = '';
 
 <div class="bg-white rounded-[26px] border border-slate-200 shadow-sm p-5 sm:p-8 animate-up delay-1">
 
-    <?php if (pg_num_rows($photos) === 0): ?>
+    <?php if ($photos->rowCount() === 0): ?>
 
         <div class="text-center py-16 px-4 text-slate-400">
 
@@ -145,16 +135,16 @@ $active_page = '';
 
         <div class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-4 sm:gap-5">
 
-            <?php while ($photo = pg_fetch_assoc($photos)): ?>
+            <?php while ($photo = $photos->fetch(PDO::FETCH_ASSOC)): ?>
 
                 <a
-                    href="img/<?= htmlspecialchars($photo['image_path']); ?>"
+                        href="<?= htmlspecialchars(rmc_gallery_image_path($photo['image_path'])); ?>"
                     target="_blank"
                     class="group rounded-2xl overflow-hidden border border-slate-200 bg-slate-50 block"
                 >
 
                     <img
-                        src="img/<?= htmlspecialchars($photo['image_path']); ?>"
+                        src="<?= htmlspecialchars(rmc_gallery_image_path($photo['image_path'])); ?>"
                         class="w-full h-36 sm:h-44 object-cover group-hover:scale-105 group-hover:opacity-80 transition duration-300"
                         loading="lazy"
                     >

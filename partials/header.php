@@ -9,8 +9,7 @@
 |   $first_name           (string)  User's first name
 |   $greeting             (string)  Greeting message (auto if empty)
 |   $unread_count         (int)     Unread notifications count
-|   $recent_notifications (result)  pg result of recent notifications
-|   $conn                 (resource) pg connection (used by the dropdown)
+|   $recent_notifications (result)  PDO statement of recent notifications
 |
 | Opens <main>, renders the sticky top header (hamburger, greeting,
 | notification dropdown, profile/settings button), and opens the page
@@ -22,6 +21,10 @@ $role         = $role         ?? '';
 $full_name    = $full_name    ?? '';
 $first_name   = $first_name   ?? (explode(' ', trim($full_name))[0] ?? '');
 $unread_count = $unread_count ?? ($stats['notifications'] ?? 0);
+
+if (!function_exists('csrf_token')) {
+    require_once __DIR__ . '/../csrf.php';
+}
 
 if (empty($greeting)) {
 
@@ -38,7 +41,7 @@ if (empty($greeting)) {
 ?>
 
 <main
-    class="flex-1 min-w-0 lg:ml-72"
+    class="flex-1 min-w-0 page-main"
 >
 
 
@@ -203,10 +206,10 @@ if (empty($greeting)) {
                             <?php if (
                                 isset($recent_notifications) &&
                                 $recent_notifications &&
-                                pg_num_rows($recent_notifications) > 0
+                                $recent_notifications->rowCount() > 0
                             ): ?>
 
-                                <?php while ($notification = pg_fetch_assoc($recent_notifications)): ?>
+                                <?php while ($notification = $recent_notifications->fetch(PDO::FETCH_ASSOC)): ?>
 
                                     <?php
 
@@ -292,11 +295,7 @@ if (empty($greeting)) {
                                                     t('notification');
                                         }
 
-                                        $is_unread = (
-                                            $notification['is_read'] === 'f' ||
-                                            $notification['is_read'] === false ||
-                                            $notification['is_read'] === '0'
-                                        );
+                                        $is_unread = empty($notification['is_read']);
 
                                     ?>
 
@@ -351,8 +350,6 @@ if (empty($greeting)) {
 
                                             <?php endif; ?>
 
-                                        </div>
-
                                         </a>
 
                                     </div>
@@ -383,7 +380,7 @@ if (empty($greeting)) {
 
 
                         <a
-                            href="notifications.php"
+                                href="notifications.php"
                             class="flex items-center justify-center gap-2 px-4 py-3.5 text-sm font-semibold text-rmc-800 hover:bg-rmc-50 border-t border-slate-100 transition"
                         >
 
@@ -401,7 +398,7 @@ if (empty($greeting)) {
                 <!-- PROFILE / SETTINGS -->
 
                 <a
-                    href="settings.php"
+                        href="settings.php"
                     class="hidden sm:flex w-10 h-10 sm:w-11 sm:h-11 rounded-xl bg-rmc-50 text-rmc-800 items-center justify-center font-bold border border-rmc-100 hover:bg-rmc-100 transition"
                     title="<?= t('profile_settings'); ?>"
                     aria-label="<?= t('profile_settings'); ?>"
@@ -420,10 +417,36 @@ if (empty($greeting)) {
 </header>
 
 <script>
+function toggleNotificationPanel() {
+    var panel = document.getElementById('notificationPanel');
+    if (!panel) return;
+    panel.classList.toggle('hidden');
+}
+
+document.addEventListener('click', function(e) {
+    var panel = document.getElementById('notificationPanel');
+    if (!panel || panel.classList.contains('hidden')) return;
+
+    var isBellClick = e.target.closest('button[onclick="toggleNotificationPanel()"]');
+    var isInsidePanel = panel.contains(e.target);
+
+    if (!isBellClick && !isInsidePanel) {
+        panel.classList.add('hidden');
+    }
+});
+
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') {
+        var panel = document.getElementById('notificationPanel');
+        if (panel) panel.classList.add('hidden');
+    }
+});
+
 function markHeaderNotifRead(e, nid) {
     e.preventDefault();
     var form = new FormData();
     form.append('nid', nid);
+    form.append('csrf_token', <?= json_encode(function_exists('csrf_token') ? csrf_token() : ''); ?>);
 
     fetch('ajax_mark_read.php', {
         method: 'POST',

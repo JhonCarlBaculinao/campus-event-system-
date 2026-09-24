@@ -1,6 +1,5 @@
 <?php
 
-session_start();
 
 require 'db_connect.php';
 require 'lang.php';
@@ -27,6 +26,8 @@ if (
 $organizer_id = $_SESSION['user_id'];
 $full_name = $_SESSION['full_name'] ?? '';
 $first_name = explode(' ', trim($full_name))[0];
+$role = 'organizer';
+$role_label = 'Event Organizer';
 
 $message = "";
 $message_type = "info";
@@ -49,11 +50,16 @@ $verified_scanned_by = null;
 | $reg is a row from a registration lookup that already guarantees the
 | registration belongs to an event of the logged-in organizer.
 |
-| Returns [ $type, $text, $student, $event, $registration_id, $checkin ]
+| NOTE: check-in data lives in a separate `attendance` table (not on
+| `registrations` or `users`). If your real table has a different name,
+| swap it in below.
+|
+| Returns [ $type, $text, $student, $event, $registration_id, $checkin,
+|           $student_id, $department ]
 |--------------------------------------------------------------------------
 */
 
-function process_attendance($conn, $reg, $scan_method, $organizer_id, $token_hash)
+function process_attendance($pdo, $reg, $scan_method, $organizer_id, $token_hash)
 {
     /*
     |--------------------------------------------------------------------------
@@ -100,26 +106,19 @@ function process_attendance($conn, $reg, $scan_method, $organizer_id, $token_has
     |--------------------------------------------------------------------------
     */
 
-    $check = pg_query_params(
-        $conn,
-        "
+    $check = $pdo->prepare("
         SELECT
             attendance_id,
             verified,
             checked_in_at
-
         FROM attendance
-
-        WHERE registration_id = $1
-
+        WHERE registration_id = ?
         ORDER BY attendance_id DESC
-
         LIMIT 1
-        ",
-        array($reg['registration_id'])
-    );
+    ");
+    $check->execute([$reg['registration_id']]);
 
-    $attendance = $check ? pg_fetch_assoc($check) : null;
+    $attendance = $check->fetch(PDO::FETCH_ASSOC);
 
     if ($attendance) {
 
@@ -150,9 +149,7 @@ function process_attendance($conn, $reg, $scan_method, $organizer_id, $token_has
     |--------------------------------------------------------------------------
     */
 
-    $insert = pg_query_params(
-        $conn,
-        "
+    $insert = $pdo->prepare("
         INSERT INTO attendance
         (
             registration_id,
@@ -163,35 +160,30 @@ function process_attendance($conn, $reg, $scan_method, $organizer_id, $token_has
             scanned_by,
             token_hash
         )
-
         VALUES
         (
-            $1,
+            ?,
             TRUE,
             NOW(),
             NOW(),
-            $2,
-            $3,
-            $4
+            ?,
+            ?,
+            ?
         )
+    ");
 
-        RETURNING
-            attendance_id,
-            checked_in_at
-        ",
-        array(
-            $reg['registration_id'],
-            $scan_method,
-            $organizer_id,
-            $token_hash
-        )
-    );
+    $insert_ok = $insert->execute([
+        $reg['registration_id'],
+        $scan_method,
+        $organizer_id,
+        $token_hash
+    ]);
 
-    if (!$insert) {
+    if (!$insert_ok) {
 
         error_log(
             "Attendance insert failed: " .
-            pg_last_error($conn)
+            ($insert->errorInfo()[2] ?? '')
         );
 
         return array(
@@ -201,7 +193,15 @@ function process_attendance($conn, $reg, $scan_method, $organizer_id, $token_has
         );
     }
 
-    $attendance = pg_fetch_assoc($insert);
+    $new_attendance_id = $pdo->lastInsertId();
+
+    $fetch_new = $pdo->prepare("
+        SELECT attendance_id, checked_in_at
+        FROM attendance
+        WHERE attendance_id = ?
+    ");
+    $fetch_new->execute([$new_attendance_id]);
+    $attendance = $fetch_new->fetch(PDO::FETCH_ASSOC);
 
     $verified_checkin = null;
 
@@ -251,11 +251,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     if ($submitted_code !== '') {
 
-        if ($submitted_code === '') {
-            $message = t('qr_cannot_be_empty');
-            $message_type = "error";
-        }
-
         $token_hash = hash('sha256', $submitted_code);
 
         if (strpos($submitted_code, 'RMC1.') === 0) {
@@ -283,9 +278,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $rid = (int) $vt['data']['rid'];
                 $eid = (int) $vt['data']['eid'];
 
-                $result = pg_query_params(
-                    $conn,
-                    "
+                $result = $pdo->prepare("
                     SELECT
                         r.registration_id,
                         r.status AS registration_status,
@@ -313,122 +306,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     JOIN events e
                         ON r.event_id = e.event_id
 
-                    WHERE r.registration_id = $1
-                      AND r.event_id = $2
-                      AND e.organizer_id = $3
+                    WHERE r.registration_id = ?
+                      AND r.event_id = ?
+                      AND e.organizer_id = ?
 
                     LIMIT 1
-                    ",
-                    array(
-                        $rid,
-                        $eid,
-                        $organizer_id
-                    )
-                );
+                ");
 
-                if (!$result) {
+                $result->execute([$rid, $eid, $organizer_id]);
 
-                    error_log(
-                        "Attendance token lookup failed: " .
-                        pg_last_error($conn)
-                    );
-
-                    $message = t('qr_process_error');
-                    $message_type = "error";
-
-                } else {
-
-                    $reg = pg_fetch_assoc($result);
-
-                    if (!$reg) {
-                        $message = t('qr_invalid_organizer');
-                        $message_type = "error";
-                    } else {
-                    list(
-                        $message_type,
-                        $message,
-                        $verified_student,
-                        $verified_event,
-                        $verified_registration_id,
-                        $verified_checkin,
-                        $verified_student_id,
-                        $verified_department
-                    ) = process_attendance(
-                        $conn,
-                        $reg,
-                        'qr',
-                        $organizer_id,
-                        $token_hash
-                    );
-                    $used_method = 'qr';
-                }
-
-                }
-
-            }
-
-        } else {
-
-            /*
-            |--------------------------------------------------------------------------
-            | LEGACY qr_code (printed cards / pasted static code)
-            |--------------------------------------------------------------------------
-            */
-
-            $result = pg_query_params(
-                $conn,
-                "
-                SELECT
-                    r.registration_id,
-                    r.status AS registration_status,
-
-                    u.user_id,
-                    u.full_name,
-                    u.email,
-                    u.student_id,
-                    u.department,
-
-                    e.event_id,
-                    e.title,
-                    e.event_date,
-                    e.start_time,
-                    e.end_time,
-                    e.venue,
-                    e.organizer_id,
-                    e.status AS event_status
-
-                FROM registrations r
-
-                JOIN users u
-                    ON r.user_id = u.user_id
-
-                JOIN events e
-                    ON r.event_id = e.event_id
-
-                WHERE r.qr_code = $1
-                  AND e.organizer_id = $2
-
-                LIMIT 1
-                ",
-                array(
-                    $submitted_code,
-                    $organizer_id
-                )
-            );
-
-            if (!$result) {
-
-                error_log(
-                    "Attendance QR lookup failed: " .
-                    pg_last_error($conn)
-                );
-
-                $message = t('qr_process_error');
-                $message_type = "error";
-
-            } else {
-
-                $reg = pg_fetch_assoc($result);
+                $reg = $result->fetch(PDO::FETCH_ASSOC);
 
                 if (!$reg) {
                     $message = t('qr_invalid_organizer');
@@ -444,31 +331,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $verified_student_id,
                         $verified_department
                     ) = process_attendance(
-                        $conn,
+                        $pdo,
                         $reg,
-                        'manual',
+                        'qr',
                         $organizer_id,
                         $token_hash
                     );
-                    $used_method = 'manual';
+                    $used_method = 'qr';
                 }
 
             }
 
-        }
+        } else {
 
-    }
+            /*
+            |--------------------------------------------------------------------------
+            | LEGACY qr_code (printed cards / pasted static code)
+            |--------------------------------------------------------------------------
+            */
 
-
-    /* =========================================================
-       2) MANUAL FALLBACK  (student ID + event)
-       ========================================================= */
-
-    elseif ($manual_event > 0 && $manual_sid !== '') {
-
-            $result = pg_query_params(
-                $conn,
-                "
+            $result = $pdo->prepare("
                 SELECT
                     r.registration_id,
                     r.status AS registration_status,
@@ -496,35 +378,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 JOIN events e
                     ON r.event_id = e.event_id
 
-                WHERE LOWER(u.student_id) = LOWER($1)
-                  AND r.event_id = $2
-                  AND e.organizer_id = $3
+                WHERE r.qr_code = ?
+                  AND e.organizer_id = ?
 
                 LIMIT 1
-                ",
-                array(
-                    $manual_sid,
-                    $manual_event,
-                    $organizer_id
-                )
-            );
+            ");
 
-        if (!$result) {
+            $result->execute([$submitted_code, $organizer_id]);
 
-            error_log(
-                "Manual attendance lookup failed: " .
-                pg_last_error($conn)
-            );
-
-            $message = t('attendance_record_error');
-            $message_type = "error";
-
-        } else {
-
-            $reg = pg_fetch_assoc($result);
+            $reg = $result->fetch(PDO::FETCH_ASSOC);
 
             if (!$reg) {
-                $message = t('attendee_not_registered');
+                $message = t('qr_invalid_organizer');
                 $message_type = "error";
             } else {
                 list(
@@ -537,11 +402,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $verified_student_id,
                     $verified_department
                 ) = process_attendance(
-                    $conn,
+                    $pdo,
                     $reg,
                     'manual',
                     $organizer_id,
-                    null
+                    $token_hash
                 );
                 $used_method = 'manual';
             }
@@ -550,10 +415,110 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     }
 
+
+    /* =========================================================
+       2) MANUAL FALLBACK  (student ID + event)
+       ========================================================= */
+
+    elseif ($manual_event > 0 && $manual_sid !== '') {
+
+        $result = $pdo->prepare("
+            SELECT
+                r.registration_id,
+                r.status AS registration_status,
+
+                u.user_id,
+                u.full_name,
+                u.email,
+                u.student_id,
+                u.department,
+
+                e.event_id,
+                e.title,
+                e.event_date,
+                e.start_time,
+                e.end_time,
+                e.venue,
+                e.organizer_id,
+                e.status AS event_status
+
+            FROM registrations r
+
+            JOIN users u
+                ON r.user_id = u.user_id
+
+            JOIN events e
+                ON r.event_id = e.event_id
+
+            WHERE LOWER(u.student_id) = LOWER(?)
+              AND r.event_id = ?
+              AND e.organizer_id = ?
+
+            LIMIT 1
+        ");
+
+        $result->execute([$manual_sid, $manual_event, $organizer_id]);
+
+        $reg = $result->fetch(PDO::FETCH_ASSOC);
+
+        if (!$reg) {
+            $message = t('attendee_not_registered');
+            $message_type = "error";
+        } else {
+            list(
+                $message_type,
+                $message,
+                $verified_student,
+                $verified_event,
+                $verified_registration_id,
+                $verified_checkin,
+                $verified_student_id,
+                $verified_department
+            ) = process_attendance(
+                $pdo,
+                $reg,
+                'manual',
+                $organizer_id,
+                null
+            );
+            $used_method = 'manual';
+        }
+
+    }
+
     if ($used_method !== null) {
         $verified_method = ($used_method === 'qr')
             ? t('scan_method_qr')
             : t('scan_method_manual');
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | AJAX RESPONSE (camera scan + file-upload scan)
+    |--------------------------------------------------------------------------
+    | The camera scanner and the QR-image-upload path both submit via
+    | fetch() with ajax=1 so they can show an instant popup instead of
+    | waiting on a full page reload. The manual check-in form still does
+    | a normal POST and falls through to the regular page render below.
+    |--------------------------------------------------------------------------
+    */
+
+    if (isset($_POST['ajax']) && $_POST['ajax'] === '1') {
+
+        header('Content-Type: application/json; charset=UTF-8');
+
+        echo json_encode(array(
+            'message_type' => $message_type,
+            'message'      => $message,
+            'student'      => $verified_student,
+            'student_id'   => $verified_student_id,
+            'department'   => $verified_department,
+            'event'        => $verified_event,
+            'checkin'      => $verified_checkin,
+            'method'       => $verified_method,
+        ));
+
+        exit;
     }
 
 }
@@ -586,28 +551,23 @@ $message_styles = [
    UNREAD COUNT + RECENT NOTIFICATIONS (shared header)
    ========================================================= */
 
-$unread_count = (int) pg_fetch_result(
-    pg_query_params(
-        $conn,
-        "SELECT COUNT(*)
-         FROM notifications
-         WHERE user_id = $1
-           AND is_read = false",
-        array($_SESSION['user_id'])
-    ),
-    0,
-    0
-);
+$unread_stmt = $pdo->prepare("
+    SELECT COUNT(*) AS cnt
+    FROM notifications
+    WHERE user_id = ?
+      AND is_read = 0
+");
+$unread_stmt->execute([$_SESSION['user_id']]);
+$unread_count = (int) $unread_stmt->fetchColumn();
 
-$recent_notifications = pg_query_params(
-    $conn,
-    "SELECT notification_id, type, message, is_read, created_at
-     FROM notifications
-     WHERE user_id = $1
-     ORDER BY created_at DESC
-     LIMIT 5",
-    array($_SESSION['user_id'])
-);
+$recent_notifications = $pdo->prepare("
+    SELECT notification_id, type, message, is_read, created_at
+    FROM notifications
+    WHERE user_id = ?
+    ORDER BY created_at DESC
+    LIMIT 5
+");
+$recent_notifications->execute([$_SESSION['user_id']]);
 
 
 /* =========================================================
@@ -616,22 +576,18 @@ $recent_notifications = pg_query_params(
 
 $organizer_events = array();
 
-$events_result = pg_query_params(
-    $conn,
-    "
+$events_result = $pdo->prepare("
     SELECT event_id, title, event_date
     FROM events
-    WHERE organizer_id = $1
+    WHERE organizer_id = ?
       AND status = 'approved'
     ORDER BY event_date ASC
-    ",
-    array($organizer_id)
-);
+");
 
-if ($events_result) {
-    while ($row = pg_fetch_assoc($events_result)) {
-        $organizer_events[] = $row;
-    }
+$events_result->execute([$organizer_id]);
+
+while ($row = $events_result->fetch(PDO::FETCH_ASSOC)) {
+    $organizer_events[] = $row;
 }
 
 
@@ -936,10 +892,44 @@ $active_page = 'scan_attendance';
 
         </div>
 
+        <!-- CAMERA PICKER (shown after permission is granted, allows switching cameras) -->
+        <div id="cameraPickerWrap" class="mb-3">
+            <label for="cameraSelect" class="text-xs font-semibold text-slate-500 uppercase tracking-wide">
+                Camera
+            </label>
+            <select
+                id="cameraSelect"
+                class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm font-semibold text-slate-700 focus:ring-4 focus:ring-rmc-200 focus:border-rmc-300 outline-none transition"
+                onchange="switchCamera()"
+            ></select>
+        </div>
+
         <div
             id="reader"
-            class="rounded-2xl overflow-hidden border border-slate-200 bg-slate-50"
+            class="rounded-2xl overflow-hidden border border-slate-200 bg-slate-50 hidden"
         ></div>
+
+        <div class="flex items-center gap-2 mb-4">
+            <button
+                id="startScanBtn"
+                onclick="document.getElementById('reader').classList.remove('hidden'); this.classList.add('hidden'); startScanner();"
+                class="bg-rmc-800 hover:bg-rmc-900 text-white px-5 py-3 rounded-xl font-semibold transition flex items-center justify-center gap-2"
+            >
+                <i class="fa-solid fa-camera"></i>
+                <?= t('start_scanning'); ?>
+            </button>
+
+            <!-- Switch Camera button -->
+            <button
+                id="switchCameraBtn"
+                type="button"
+                onclick="document.getElementById('cameraPickerWrap').classList.toggle('hidden');"
+                class="bg-rmc-50 hover:bg-rmc-100 text-slate-800 px-4 py-2 rounded-sm font-semibold transition"
+            >
+                <i class="fa-solid fa-exchange-alt"></i>
+                <?= t('switch_camera'); ?>
+            </button>
+        </div>
 
         <div class="mt-4 bg-rmc-50 text-rmc-800 border border-rmc-100 rounded-xl p-4 text-sm flex items-start gap-2">
 
@@ -948,6 +938,25 @@ $active_page = 'scan_attendance';
             <span>
                 <?= t('camera_hint'); ?>
             </span>
+
+        </div>
+
+        <!-- UPLOAD QR IMAGE (fallback when live camera scanning doesn't cooperate) -->
+        <div class="mt-4 pt-4 border-t border-slate-100">
+
+            <label class="font-medium text-slate-700 text-sm">
+                Or upload a QR code image
+            </label>
+
+            <input
+                type="file"
+                id="qrFileInput"
+                accept="image/*"
+                onchange="handleQrFileUpload(this.files[0])"
+                class="mt-2 w-full text-sm text-slate-600 file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:bg-rmc-800 file:text-white file:font-semibold hover:file:bg-rmc-900 file:cursor-pointer cursor-pointer"
+            >
+
+            <div id="qrFileStatus" class="mt-2 text-sm"></div>
 
         </div>
 
@@ -1143,10 +1152,69 @@ $active_page = 'scan_attendance';
 
 
 <!-- =========================================================
+     SCAN RESULT MODAL (popup shown after camera/file-upload scan)
+     ========================================================= -->
+
+<div
+    id="scanResultModal"
+    class="hidden fixed inset-0 z-[70] bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4"
+    onclick="if (event.target === this) closeScanResultModal();"
+>
+
+    <div class="bg-white rounded-3xl w-full max-w-sm sm:max-w-md shadow-2xl overflow-hidden">
+
+        <div id="scanResultHeader" class="px-6 py-6 text-white flex items-center gap-4">
+
+            <div id="scanResultIconWrap" class="w-14 h-14 rounded-full bg-white/20 flex items-center justify-center shrink-0">
+                <i id="scanResultIcon" class="fa-solid text-2xl"></i>
+            </div>
+
+            <div class="min-w-0">
+                <p id="scanResultLabel" class="text-xs font-bold uppercase tracking-wide opacity-90"></p>
+                <h3 id="scanResultTitle" class="font-bold text-xl leading-snug"></h3>
+            </div>
+
+        </div>
+
+        <div class="p-6">
+
+            <p id="scanResultMessage" class="font-semibold text-slate-700 mb-4"></p>
+
+            <div id="scanResultDetails" class="bg-slate-50 border border-slate-200 rounded-2xl p-4 space-y-3"></div>
+
+        </div>
+
+        <div class="px-6 pb-6 flex gap-3">
+
+            <button
+                type="button"
+                onclick="closeScanResultModal(); retryScanner();"
+                class="flex-1 bg-rmc-800 hover:bg-rmc-900 text-white py-3 rounded-xl font-semibold transition"
+            >
+                <i class="fa-solid fa-camera mr-2"></i>
+                Scan Next
+            </button>
+
+            <button
+                type="button"
+                onclick="closeScanResultModal();"
+                class="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 py-3 rounded-xl font-semibold transition"
+            >
+                Close
+            </button>
+
+        </div>
+
+    </div>
+
+</div>
+
+
+<!-- =========================================================
      QR SCANNER LIBRARY + SCRIPT
      ========================================================= -->
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
+<script src="js/html5-qrcode.min.js" onerror="var s=document.createElement('script');s.src='https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js';document.head.appendChild(s);"></script>
 
 <script>
 
@@ -1159,6 +1227,426 @@ const scanT = <?= json_encode([
 ]); ?>;
 
 let scannerStarted = false;
+let html5QrCode = null;
+let preferredId = null;
+let qrScanTimeout = null;
+
+/* Standard scan config for html5-qrcode's start() — required as the
+   2nd argument (see startWithFallback / switchCamera below). */
+const qrScanConfig = {
+    fps: 10,
+    qrbox: function (viewfinderWidth, viewfinderHeight) {
+        const minEdge = Math.min(viewfinderWidth, viewfinderHeight);
+        const size = Math.floor(minEdge * 0.7);
+        return { width: size, height: size };
+    }
+};
+
+function showScannerError(icon, title, subtitle) {
+    document.getElementById("reader").innerHTML =
+        "<div class='text-center text-slate-400 p-10'>" +
+        "<i class='fa-solid " + icon + " text-4xl mb-4'></i>" +
+        "<br>" + title +
+        (subtitle ? "<br><br>" + subtitle : "") +
+        "</div>";
+}
+
+function showNoQRMessage() {
+    document.getElementById("reader").innerHTML =
+        "<div class='bg-rmc-50 border border-rmc-200 text-rmc-800 rounded-2xl p-6 text-center mb-4 animate-up'>" +
+        "<i class='fa-solid fa-qrcode text-2xl mb-3'></i>" +
+        "<h3 class='font-bold text-rmc-800'>No QR code detected</h3>" +
+        "<p class='text-slate-600'>Please show the QR code clearly to the camera.</p>" +
+        "<button onclick='tryAgainScanner()' class='mt-3 inline-block bg-rmc-800 hover:bg-rmc-900 text-white px-4 py-2 rounded-xl text-sm font-semibold transition'>Try Again</button>" +
+        "</div>";
+}
+
+function scannerFriendlyError(error) {
+
+    var name = (error && error.name) ? error.name : '';
+    var msg  = (error && error.message) ? error.message : String(error || '');
+
+    if (name === 'NotAllowedError' || name === 'SecurityError' ||
+        /permission|denied|blocked/i.test(msg)) {
+        return "Camera permission was denied. Allow camera access for this site in your browser settings, then click Start Scanning again.";
+    }
+
+    if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
+        return "No camera device was found by the browser.";
+    }
+
+    if (name === 'NotReadableError' || name === 'TrackStartError') {
+        return "The camera is already in use by another application. Close it and try again.";
+    }
+
+    if (name === 'OverconstrainedError') {
+        return "The selected camera could not be started with the requested settings.";
+    }
+
+    if (/insecure|https/i.test(msg)) {
+        return "Camera access requires a secure context. Open this page via http://127.0.0.1/";
+    }
+
+    return "Camera error: " + (name ? name + " — " : "") + msg;
+}
+
+function showScannerRealError(error) {
+    document.getElementById("reader").innerHTML =
+        "<div class='text-center text-slate-500 p-8'>" +
+        "<i class='fa-solid fa-video-slash text-3xl mb-3 text-slate-300'></i>" +
+        "<p class='font-semibold text-red-600 mb-2'>Unable to start the camera</p>" +
+        "<p class='text-sm leading-relaxed'>" + scannerFriendlyError(error) + "</p>" +
+        "<button type='button' onclick='retryScanner()' class='mt-4 inline-flex items-center gap-2 bg-rmc-800 hover:bg-rmc-900 text-white px-5 py-2.5 rounded-xl text-sm font-semibold transition'>" +
+        "<i class='fa-solid fa-rotate-right'></i> Try Again</button>" +
+        "</div>";
+}
+
+function populateCameraPicker(cameras, preferredId) {
+    var wrap   = document.getElementById("cameraPickerWrap");
+    var select = document.getElementById("cameraSelect");
+    if (!wrap || !select) return cameras && cameras.length ? cameras[0].id : null;
+
+    select.innerHTML = "";
+
+    if (!cameras || cameras.length === 0) return null;
+
+    cameras.forEach(function(cam, idx) {
+        var opt = document.createElement("option");
+        opt.value = cam.id;
+        var label = cam.label || ("Camera " + (idx + 1));
+        if (/front|user|face|integrated|built[- ]?in|webcam/i.test(label)) {
+            label += " (built-in)";
+        }
+        opt.textContent = label;
+        select.appendChild(opt);
+    });
+
+    var chosen = preferredId || select.options[0].value;
+    select.value = chosen;
+
+    /* Show the picker only when there is an actual choice to make */
+    if (cameras.length > 1) {
+        wrap.classList.remove("hidden");
+    }
+
+    return chosen;
+}
+
+function switchCamera() {
+
+    var select = document.getElementById("cameraSelect");
+    if (!select || !select.value) return;
+
+    stopScanner();
+    html5QrCode = null;
+
+    html5QrCode = new Html5Qrcode("reader");
+
+    try {
+        var p = html5QrCode.start(
+            select.value,
+            qrScanConfig,
+            onScanSuccess
+        );
+        if (p && typeof p.catch === 'function') {
+            p.catch(function(error) {
+                console.error(error);
+                showScannerRealError(error);
+            });
+        }
+    } catch (syncErr) {
+        console.error(syncErr);
+        showScannerRealError(syncErr);
+    }
+
+}
+
+function retryScanner() {
+    var btn = document.getElementById("startScanBtn");
+    if (btn) {
+        btn.classList.remove("hidden");
+        btn.click();
+    } else {
+        document.getElementById("reader").classList.remove("hidden");
+        startScanner();
+    }
+}
+
+function tryAgainScanner() {
+    /* Clear the no-QR message, reset scanner state, and restart */
+    clearTimeout(qrScanTimeout);
+    document.getElementById("reader").innerHTML = "";
+    scannerStarted = false;
+    document.getElementById("reader").classList.remove("hidden");
+    startScanner();
+}
+
+function startWithFallback(reader, preferredId) {
+
+    var attempts = [];
+
+    if (preferredId) {
+        attempts.push(preferredId);
+    }
+
+    attempts.push({ facingMode: "user" });
+    attempts.push({ video: true });
+
+    function tryNext(index) {
+
+        if (index >= attempts.length) {
+            showScannerRealError({ name: "NotFoundError", message: "No usable camera found after trying all available devices." });
+            return;
+        }
+
+        /* Fresh instance per attempt — a failed start leaves the previous
+           instance in a state where re-calling start() throws synchronously,
+           which previously left the loading spinner stuck forever. */
+        try { html5QrCode.stop().then(function() { html5QrCode.clear(); }).catch(function() {}); } catch(e) {}
+        html5QrCode = new Html5Qrcode("reader");
+
+        var promise;
+        try {
+            promise = html5QrCode.start(
+                attempts[index],
+                qrScanConfig,
+                onScanSuccess
+            );
+        } catch (syncErr) {
+            console.error("Scanner attempt " + index + " threw:", syncErr);
+            tryNext(index + 1);
+            return;
+        }
+
+        if (!promise || typeof promise.then !== 'function') {
+            tryNext(index + 1);
+            return;
+        }
+
+        promise.then(function() {
+            reader.style.minHeight = "";
+        }).catch(function(error) {
+
+            console.error("Scanner attempt " + index + " failed:", error);
+            tryNext(index + 1);
+        });
+    }
+
+    tryNext(0);
+}
+
+function startScanner() {
+
+    if (typeof Html5Qrcode === 'undefined') {
+        showScannerError('fa-cloud-arrow-down', scanT.camera_not_detected, scanT.use_manual_checkin);
+        return;
+    }
+
+    var reader = document.getElementById("reader");
+    reader.style.minHeight = "280px";
+    reader.innerHTML =
+        "<div class='text-center text-slate-400 p-10'>" +
+        "<i class='fa-solid fa-spinner fa-spin text-2xl mb-3'></i>" +
+        "<br>Requesting camera access..." +
+        "<br><span class='text-xs text-slate-400 mt-2 block'>If your browser shows a permission prompt, please allow it.</span>" +
+        "</div>";
+
+    /* No auto-timeouts of any kind here anymore. Scanning simply waits
+       until the camera responds (permission granted/denied) or a real
+       error occurs — no "no QR detected" popup, no watchdog timeout.
+       Use the "Try Again" button (shown on real errors) to restart
+       manually if ever needed. */
+
+    /*
+    | getCameras() triggers the browser permission prompt.
+    | Labels are only available AFTER permission is granted.
+    */
+    Html5Qrcode.getCameras().then(function(cameras) {
+
+        if (!cameras || cameras.length === 0) {
+            /* Genuinely no camera enumerated → fall back to generic constraints */
+            startWithFallback(reader, null);
+            return;
+        }
+
+        preferredId = populateCameraPicker(cameras, null);
+
+        /* Prefer a built-in/front camera when the label reveals one */
+        for (var i = 0; i < cameras.length; i++) {
+            var label = (cameras[i].label || '').toLowerCase();
+            if (label.indexOf('front') !== -1 || label.indexOf('integrated') !== -1 ||
+                label.indexOf('built') !== -1 || label.indexOf('webcam') !== -1 ||
+                label.indexOf('face') !== -1) {
+                preferredId = cameras[i].id;
+                populateCameraPicker(cameras, preferredId);
+                break;
+            }
+        }
+
+        startWithFallback(reader, preferredId);
+
+    }).catch(function(error) {
+
+        console.error(error);
+
+        /* Permission denied or enumeration unsupported — still attempt
+           a direct start so the browser can re-prompt if appropriate. */
+        if (error && (error.name === 'NotAllowedError' || error.name === 'SecurityError')) {
+            showScannerRealError(error);
+            return;
+        }
+
+        startWithFallback(reader, null);
+    });
+
+}
+
+function stopScanner() {
+
+    if (html5QrCode) {
+
+        try {
+            html5QrCode.stop().then(function() {
+                html5QrCode.clear();
+            }).catch(function() {});
+        } catch (e) {}
+
+    }
+
+}
+
+function handleQrFileUpload(file) {
+
+    /* Clear any leftover camera-session timers/flags so an earlier
+       camera attempt can't stomp on this upload's status message. */
+    clearTimeout(qrScanTimeout);
+    scannerStarted = false;
+
+    var statusEl = document.getElementById("qrFileStatus");
+
+    if (!file) {
+        return;
+    }
+
+    if (typeof Html5Qrcode === 'undefined') {
+        statusEl.className = "mt-2 text-sm text-red-600 font-semibold";
+        statusEl.textContent = "QR library not loaded — cannot scan file.";
+        return;
+    }
+
+    statusEl.className = "mt-2 text-sm text-slate-500";
+    statusEl.textContent = "Reading image...";
+
+    /* Stop the live camera first if it's running, so both scanners
+       don't fight over the same #reader element. */
+    stopScanner();
+
+    var fileScanner = new Html5Qrcode("reader");
+
+    fileScanner.scanFile(file, false)
+        .then(function(decodedText) {
+
+            statusEl.className = "mt-2 text-sm text-emerald-600 font-semibold";
+            statusEl.textContent = "QR code detected — verifying...";
+
+            try { fileScanner.clear(); } catch (e) {}
+
+            onScanSuccess(decodedText);
+
+        })
+        .catch(function(error) {
+
+            console.error("File scan failed:", error);
+
+            statusEl.className = "mt-2 text-sm text-red-600 font-semibold";
+            statusEl.textContent = "No QR code could be detected in that image. Try a clearer photo or use manual entry below.";
+
+            try { fileScanner.clear(); } catch (e) {}
+
+        });
+
+    /* Reset the input so re-selecting the same file fires onchange again */
+    document.getElementById("qrFileInput").value = "";
+}
+
+const SCAN_RESULT_STYLES = {
+    success: { header: 'bg-emerald-600', icon: 'fa-check', label: 'Attendance Verified', title: 'Present' },
+    warning: { header: 'bg-amber-500',   icon: 'fa-triangle-exclamation', label: 'Attendance Notice', title: 'Already Checked In' },
+    error:   { header: 'bg-red-600',     icon: 'fa-xmark', label: 'Attendance Error', title: 'Verification Failed' },
+    info:    { header: 'bg-rmc-800',     icon: 'fa-circle-info', label: 'Notice', title: 'Notice' }
+};
+
+function scanResultEscape(text) {
+    const div = document.createElement('div');
+    div.textContent = text == null ? '' : String(text);
+    return div.innerHTML;
+}
+
+function showScanResultModal(data) {
+
+    const type = SCAN_RESULT_STYLES[data.message_type] ? data.message_type : 'info';
+    const style = SCAN_RESULT_STYLES[type];
+
+    const header = document.getElementById('scanResultHeader');
+    header.className = 'px-6 py-6 text-white flex items-center gap-4 ' + style.header;
+
+    document.getElementById('scanResultIcon').className = 'fa-solid ' + style.icon + ' text-2xl';
+    document.getElementById('scanResultLabel').textContent = style.label;
+    document.getElementById('scanResultTitle').textContent =
+        (type === 'success' || type === 'warning') ? style.title : (data.message || style.title);
+
+    document.getElementById('scanResultMessage').textContent = data.message || '';
+
+    const rows = [];
+
+    if (data.student) {
+        rows.push(['Student', data.student]);
+    }
+    if (data.student_id) {
+        rows.push(['Student ID', data.student_id]);
+    }
+    if (data.department) {
+        rows.push(['Department', data.department]);
+    }
+    if (data.event) {
+        rows.push(['Event', data.event]);
+    }
+    if (data.method) {
+        rows.push(['Scan Method', data.method]);
+    }
+    if (data.checkin) {
+        rows.push(['Check-In Time', data.checkin]);
+    }
+
+    const detailsEl = document.getElementById('scanResultDetails');
+
+    if (rows.length === 0) {
+        detailsEl.classList.add('hidden');
+        detailsEl.innerHTML = '';
+    } else {
+        detailsEl.classList.remove('hidden');
+        detailsEl.innerHTML = rows.map(function(r) {
+            return '<div class="flex justify-between gap-3">' +
+                '<span class="text-xs font-bold uppercase tracking-wide text-slate-400">' + scanResultEscape(r[0]) + '</span>' +
+                '<span class="text-sm font-bold text-slate-800 text-right">' + scanResultEscape(r[1]) + '</span>' +
+                '</div>';
+        }).join('');
+    }
+
+    document.getElementById('scanResultModal').classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
+}
+
+function closeScanResultModal() {
+    document.getElementById('scanResultModal').classList.add('hidden');
+    document.body.style.overflow = '';
+}
+
+document.addEventListener('keydown', function(event) {
+    if (event.key === 'Escape') {
+        closeScanResultModal();
+    }
+});
 
 function onScanSuccess(decodedText) {
 
@@ -1166,8 +1654,11 @@ function onScanSuccess(decodedText) {
         return;
     }
 
+    clearTimeout(qrScanTimeout);
+
     scannerStarted = true;
 
+    stopScanner();
 
     document.getElementById("reader").innerHTML =
 
@@ -1192,6 +1683,11 @@ function onScanSuccess(decodedText) {
         scanT.csrf
     );
 
+    formData.append(
+        "ajax",
+        "1"
+    );
+
 
     fetch(
         "scan_attendance.php",
@@ -1208,12 +1704,22 @@ function onScanSuccess(decodedText) {
     )
     .then(function(response) {
 
-        return response.text();
+        return response.json();
 
     })
-    .then(function() {
+    .then(function(data) {
 
-        location.reload();
+        scannerStarted = false;
+
+        document.getElementById("reader").classList.add("hidden");
+        document.getElementById("reader").innerHTML = "";
+
+        var startBtn = document.getElementById("startScanBtn");
+        if (startBtn) {
+            startBtn.classList.remove("hidden");
+        }
+
+        showScanResultModal(data);
 
     })
     .catch(function(error) {
@@ -1234,41 +1740,6 @@ function onScanSuccess(decodedText) {
 
 }
 
-
-const html5QrCode =
-    new Html5Qrcode("reader");
-
-
-html5QrCode.start(
-    {
-        facingMode: "environment"
-    },
-    {
-        fps: 10,
-        qrbox: 250
-    },
-    onScanSuccess
-).catch(function(error) {
-
-    console.error(error);
-
-    document.getElementById("reader").innerHTML =
-
-        "<div class='text-center text-slate-400 p-10'>" +
-
-        "<i class='fa-solid fa-camera-slash text-4xl mb-4'></i>" +
-
-        "<br>" +
-
-        scanT.camera_not_detected +
-
-        "<br><br>" +
-
-        scanT.use_manual_checkin +
-
-        "</div>";
-
-});
 
 </script>
 

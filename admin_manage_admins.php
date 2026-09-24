@@ -1,10 +1,10 @@
 <?php
 
-session_start();
 
 include 'db_connect.php';
 require 'lang.php';
 require 'csrf.php';
+require_once 'notifications_helper.php';
 
 if (
     !isset($_SESSION['user_id']) ||
@@ -38,6 +38,7 @@ if (
     $student_id = trim($_POST['student_id'] ?? '');
     $password   = $_POST['password'] ?? '';
     $department = trim($_POST['department'] ?? '');
+    $email      = trim($_POST['email'] ?? '');
 
     $valid_departments = [
         'BS Computer Science',
@@ -53,7 +54,8 @@ if (
         $full_name === '' ||
         $student_id === '' ||
         $password === '' ||
-        $department === ''
+        $department === '' ||
+        $email === ''
     ) {
 
         $error = t('fill_all_fields');
@@ -65,6 +67,10 @@ if (
     } elseif (mb_strlen($student_id) < 3) {
 
         $error = t('valid_student_id_msg');
+
+    } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+
+        $error = t('valid_email_msg') ?: 'Please enter a valid email address.';
 
     } elseif (!in_array($department, $valid_departments, true)) {
 
@@ -85,24 +91,29 @@ if (
 
     } else {
 
-        $check = pg_query_params(
-            $conn,
-            "SELECT user_id
+        $check = $pdo->prepare("SELECT user_id
              FROM users
-             WHERE student_id = $1
-             LIMIT 1",
-            array($student_id)
-        );
+             WHERE student_id = ?
+             LIMIT 1"); $check->execute(array($student_id));
+
+        $email_check = $pdo->prepare("SELECT user_id
+             FROM users
+             WHERE LOWER(email) = LOWER(?)
+             LIMIT 1"); $email_check->execute(array($email));
 
         if (!$check) {
 
             $error = 'Unable to verify Student ID. Please try again.';
 
-        } elseif (pg_num_rows($check) > 0) {
+        } elseif ($check->rowCount() > 0) {
 
             $error = t('student_id_exists_msg');
 
-        } else {
+        } elseif ($email_check->rowCount() > 0) {
+
+            $error = t('email_in_use_msg') ?: 'This email address is already in use.';
+
+} else {
 
             $hashed_password = password_hash($password, PASSWORD_DEFAULT);
 
@@ -112,44 +123,22 @@ if (
 
             } else {
 
-                $insert = pg_query_params(
-                    $conn,
-                    "INSERT INTO users
-                         (full_name, student_id, password, department, role, status, email_notifications, appearance, email_verified, failed_attempts, created_at)
-                     VALUES
-                         ($1, $2, $3, $4, 'admin', 'active', 't', 'system', 'f', 0, NOW())
-                     RETURNING user_id",
-                    array(
-                        $full_name,
-                        $student_id,
-                        $hashed_password,
-                        $department
-                    )
-                );
+                $stmt = $pdo->prepare("INSERT INTO users
+                     (full_name, student_id, department, email, password, role, status, email_notifications, appearance, email_verified, failed_attempts, created_at)
+                 VALUES
+                     (?, ?, ?, ?, ?, 'admin', 'active', 1, 'system', 0, 0, NOW())");
+                $stmt->execute([
+                    $full_name,
+                    $student_id,
+                    $department,
+                    $email,
+                    $hashed_password
+                ]);
 
-                if ($insert) {
+                $new_user_id = (int) $pdo->lastInsertId();
 
-                    $row = pg_fetch_assoc($insert);
-                    $new_user_id = (int) $row['user_id'];
-
-                    pg_query_params(
-                        $conn,
-                        "INSERT INTO audit_log (admin_user_id, action, target_user_id, details) VALUES ($1, $2, $3, $4)",
-                        array(
-                            $admin_id,
-                            'create_admin',
-                            $new_user_id,
-                            'Admin account created: ' . $full_name . ' (' . $student_id . ')'
-                        )
-                    );
-
-                    header("Location: admin_manage_admins.php?msg=created");
-                    exit();
-
-                } else {
-
-                    $error = 'Unable to create admin account. Please try again.';
-                }
+                header("Location: admin_manage_admins.php?msg=created");
+                exit();
             }
         }
     }
@@ -181,25 +170,17 @@ if (
 
     } else {
 
-        $count_result = pg_query_params(
-            $conn,
-            "SELECT COUNT(*) AS cnt
+        $count_result = $pdo->prepare("SELECT COUNT(*) AS cnt
              FROM users
-             WHERE role = 'admin' AND status = 'active'",
-            array()
-        );
+             WHERE role = 'admin' AND status = 'active'"); $count_result->execute(array());
 
-        $admin_count = (int) pg_fetch_result($count_result, 0, 'cnt');
+        $admin_count = (int) ($count_result->fetch(PDO::FETCH_ASSOC)['cnt'] ?? 0);
 
-        $current_result = pg_query_params(
-            $conn,
-            "SELECT status
+        $current_result = $pdo->prepare("SELECT status
              FROM users
-             WHERE user_id = $1 AND role = 'admin'",
-            array($target_id)
-        );
+             WHERE user_id = ? AND role = 'admin'"); $current_result->execute(array($target_id));
 
-        $current = pg_fetch_assoc($current_result);
+        $current = $current_result->fetch(PDO::FETCH_ASSOC);
 
         if (!$current) {
 
@@ -219,40 +200,41 @@ if (
                 ? 'deactivated'
                 : 'active';
 
-            $update_result = pg_query_params(
-                $conn,
-                "UPDATE users
-                 SET status = $1
-                 WHERE user_id = $2 AND role = 'admin'",
-                array(
+            $update_result = $pdo->prepare("UPDATE users
+                 SET status = ?
+                 WHERE user_id = ? AND role = 'admin'"); $update_result->execute(array(
                     $new_status,
                     $target_id
-                )
-            );
+                ));
 
             if ($update_result) {
 
-                pg_query_params(
-                    $conn,
-                    "INSERT INTO notifications (user_id, message, type) VALUES ($1, $2, 'admin_action')",
-                    array(
-                        $target_id,
-                        $new_status === 'active'
-                            ? 'Your admin account has been activated by an administrator.'
-                            : 'Your admin account has been deactivated by an administrator.'
-                    )
+                if ($new_status === 'deactivated') {
+                    $pdo->prepare("UPDATE users SET session_token = NULL WHERE user_id = ? AND role = 'admin'")
+                        ->execute([$target_id]);
+                }
+
+                notify_user(
+                    $pdo,
+                    $target_id,
+                    $new_status === 'active'
+                        ? 'Your admin account has been activated by an administrator.'
+                        : 'Your admin account has been deactivated by an administrator.',
+                    'admin_action',
+                    $new_status === 'active'
+                        ? 'Regis Marie College - Your Admin Account Has Been Activated'
+                        : 'Regis Marie College - Your Admin Account Has Been Deactivated',
+                    null,
+                    true
                 );
 
-                pg_query_params(
-                    $conn,
-                    "INSERT INTO audit_log (admin_user_id, action, target_user_id, details) VALUES ($1, $2, $3, $4)",
-                    array(
-                        $admin_id,
-                        'toggle_status_' . $new_status,
-                        $target_id,
-                        'Admin status changed to ' . $new_status
-                    )
-                );
+                $audit_stmt = $pdo->prepare("INSERT INTO audit_log (admin_user_id, target_user_id, action, details) VALUES (?, ?, ?, ?)");
+                $audit_stmt->execute([
+                    $admin_id,
+                    $target_id,
+                    'toggle_status_' . $new_status,
+                    'Admin status changed to ' . $new_status
+                ]);
 
                 header("Location: admin_manage_admins.php?msg=updated");
                 exit();
@@ -291,25 +273,26 @@ if (
 
     } else {
 
-        pg_query_params(
-            $conn,
-            "UPDATE users
-             SET failed_attempts = 0, locked_until = NULL
-             WHERE user_id = $1 AND role = 'admin'",
-            array($unlock_id)
+$pdo->prepare("UPDATE users SET failed_attempts = 0, locked_until = NULL WHERE user_id = ? AND role = 'admin'")
+    ->execute([$unlock_id]);
+
+        notify_user(
+            $pdo,
+            $unlock_id,
+            'Your admin account has been unlocked by an administrator.',
+            'admin_action',
+            'Regis Marie College - Your Admin Account Has Been Unlocked',
+            null,
+            true
         );
 
-        pg_query_params(
-            $conn,
-            "INSERT INTO notifications (user_id, message, type) VALUES ($1, 'Your admin account has been unlocked by an administrator.', 'admin_action')",
-            array($unlock_id)
-        );
-
-        pg_query_params(
-            $conn,
-            "INSERT INTO audit_log (admin_user_id, action, target_user_id, details) VALUES ($1, 'unlock', $2, 'Admin account unlocked')",
-            array($admin_id, $unlock_id)
-        );
+        $audit_stmt = $pdo->prepare("INSERT INTO audit_log (admin_user_id, target_user_id, action, details) VALUES (?, ?, ?, ?)");
+        $audit_stmt->execute([
+            $admin_id,
+            $unlock_id,
+            'unlock',
+            'Admin account unlocked'
+        ]);
 
         header("Location: admin_manage_admins.php?msg=unlocked");
         exit();
@@ -353,34 +336,28 @@ $search = isset($_GET['search'])
 
 if (!empty($search)) {
 
-    $admins = pg_query_params(
-        $conn,
-
-        "SELECT *,
+    $admins = $pdo->prepare("SELECT *,
                 CASE WHEN locked_until IS NOT NULL AND locked_until > NOW()
-                     THEN EXTRACT(EPOCH FROM (locked_until - NOW()))::int
+                     THEN TIMESTAMPDIFF(SECOND, NOW(), locked_until)
                      ELSE 0 END AS lockout_secs
-         FROM users
-         WHERE role = 'admin'
-           AND (full_name ILIKE $1
-                OR student_id ILIKE $1)
-         ORDER BY full_name",
-
-        array('%' . $search . '%')
-    );
+          FROM users
+          WHERE role = 'admin'
+             AND (full_name LIKE ? OR student_id LIKE ?)
+          ORDER BY full_name");
+    $admins->execute([
+        '%' . $search . '%',
+        '%' . $search . '%'
+    ]);
 
 } else {
 
-    $admins = pg_query(
-        $conn,
-        "SELECT *,
+    $admins = $pdo->query("SELECT *,
                 CASE WHEN locked_until IS NOT NULL AND locked_until > NOW()
-                     THEN EXTRACT(EPOCH FROM (locked_until - NOW()))::int
+                     THEN TIMESTAMPDIFF(SECOND, NOW(), locked_until)
                      ELSE 0 END AS lockout_secs
-         FROM users
-         WHERE role = 'admin'
-         ORDER BY full_name"
-    );
+          FROM users
+          WHERE role = 'admin'
+          ORDER BY full_name");
 }
 
 
@@ -393,28 +370,12 @@ if (!empty($search)) {
 $full_name = $_SESSION['full_name'] ?? '';
 $first_name = explode(' ', trim($full_name))[0];
 
-$unread_count = (int) pg_fetch_result(
-    pg_query_params(
-        $conn,
-        "SELECT COUNT(*)
-         FROM notifications
-         WHERE user_id = $1
-           AND is_read = false",
-        array($admin_id)
-    ),
-    0,
-    0
-);
+$unread_stmt = $pdo->prepare("SELECT COUNT(*) FROM notifications WHERE user_id = ? AND is_read = false");
+$unread_stmt->execute([$admin_id]);
+$unread_count = (int)$unread_stmt->fetchColumn();
 
-$recent_notifications = pg_query_params(
-    $conn,
-    "SELECT notification_id, type, message, is_read, created_at
-     FROM notifications
-     WHERE user_id = $1
-     ORDER BY created_at DESC
-     LIMIT 5",
-    array($admin_id)
-);
+$recent_notifications = $pdo->prepare("SELECT notification_id, type, message, is_read, created_at FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 5");
+$recent_notifications->execute([$admin_id]);
 
 $role_label  = 'Administrator';
 $page_title  = 'Manage Admins — RMC Events';
@@ -562,7 +523,7 @@ $valid_departments = [
                     for="student_id"
                     class="block text-sm font-semibold text-slate-700 mb-1.5"
                 >
-                    <?= t('student_id'); ?>
+                    Admin ID / Username
                 </label>
 
                 <input
@@ -574,6 +535,34 @@ $valid_departments = [
                     required
                     class="border border-slate-200 rounded-xl px-4 py-2.5 w-full bg-slate-50 focus:bg-white focus:ring-2 focus:ring-rmc-300 focus:border-rmc-300 outline-none transition"
                 >
+
+            </div>
+
+
+            <!-- Email -->
+
+            <div>
+
+                <label
+                    for="email"
+                    class="block text-sm font-semibold text-slate-700 mb-1.5"
+                >
+                    <?= t('email_address'); ?>
+                </label>
+
+                <input
+                    type="email"
+                    id="email"
+                    name="email"
+                    value="<?= htmlspecialchars($_POST['email'] ?? ''); ?>"
+                    placeholder="example@gmail.com"
+                    required
+                    class="border border-slate-200 rounded-xl px-4 py-2.5 w-full bg-slate-50 focus:bg-white focus:ring-2 focus:ring-rmc-300 focus:border-rmc-300 outline-none transition"
+                >
+
+                <p class="text-xs text-slate-400 mt-1">
+                    Needed for password reset, account unlock, and admin-action notifications.
+                </p>
 
             </div>
 
@@ -711,7 +700,7 @@ $valid_departments = [
             <?php if (!empty($search)): ?>
 
                 <a
-                    href="admin_manage_admins.php"
+                        href="admin_manage_admins.php"
                     class="border border-slate-200 px-4 py-2 rounded-xl text-sm text-slate-600 hover:bg-rmc-50 transition"
                 >
 
@@ -739,7 +728,7 @@ $valid_departments = [
                     </th>
 
                     <th class="px-6 py-4 text-left text-xs uppercase tracking-wide">
-                        <?= t('student_id'); ?>
+                        Admin ID / Username
                     </th>
 
                     <th class="px-6 py-4 text-left text-xs uppercase tracking-wide">
@@ -768,7 +757,7 @@ $valid_departments = [
 
             <tbody>
 
-                <?php if (pg_num_rows($admins) === 0): ?>
+                <?php if ($admins->rowCount() === 0): ?>
 
                     <tr>
 
@@ -800,7 +789,7 @@ $valid_departments = [
                 <?php endif; ?>
 
 
-                <?php while ($row = pg_fetch_assoc($admins)): ?>
+                <?php while ($row = $admins->fetch(PDO::FETCH_ASSOC)): ?>
 
                     <?php
                     $is_self = ((int) $row['user_id'] === $admin_id);
@@ -909,7 +898,7 @@ $valid_departments = [
                                                 type="button"
                                                 class="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-xl text-sm transition"
                                                 title="<?= t('deactivate_user'); ?>"
-                                                onclick="openConfirmModal({form: this.closest('form'), title: <?= json_encode(t('deactivate_user')) ?>, message: <?= json_encode(t('deactivate_user_confirm')) ?>, itemName: <?= json_encode(htmlspecialchars($row['full_name'], ENT_QUOTES)) ?>, itemLabel: <?= json_encode(t('administrator')) ?>, actionText: <?= json_encode(t('deactivate_user')) ?>, color: 'red', icon: 'fa-solid fa-user-slash'});"
+                                                onclick="openConfirmModal({form: this.closest('form'), title: <?= htmlspecialchars(json_encode(t('deactivate_user')), ENT_QUOTES) ?>, message: <?= htmlspecialchars(json_encode(t('deactivate_user_confirm')), ENT_QUOTES) ?>, itemName: <?= htmlspecialchars(json_encode(htmlspecialchars($row['full_name'], ENT_QUOTES)), ENT_QUOTES) ?>, itemLabel: <?= htmlspecialchars(json_encode(t('administrator')), ENT_QUOTES) ?>, actionText: <?= htmlspecialchars(json_encode(t('deactivate_user')), ENT_QUOTES) ?>, color: 'red', icon: 'fa-solid fa-user-slash'});"
                                             >
 
                                                 <i class="fa-solid fa-user-slash"></i>
@@ -922,7 +911,7 @@ $valid_departments = [
                                                 type="button"
                                                 class="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-xl text-sm transition"
                                                 title="<?= t('activate_user'); ?>"
-                                                onclick="openConfirmModal({form: this.closest('form'), title: <?= json_encode(t('activate_user')) ?>, message: <?= json_encode(t('activate_user_confirm')) ?>, itemName: <?= json_encode(htmlspecialchars($row['full_name'], ENT_QUOTES)) ?>, itemLabel: <?= json_encode(t('administrator')) ?>, actionText: <?= json_encode(t('activate_user')) ?>, color: 'emerald', icon: 'fa-solid fa-user-check'});"
+                                                onclick="openConfirmModal({form: this.closest('form'), title: <?= htmlspecialchars(json_encode(t('activate_user')), ENT_QUOTES) ?>, message: <?= htmlspecialchars(json_encode(t('activate_user_confirm')), ENT_QUOTES) ?>, itemName: <?= htmlspecialchars(json_encode(htmlspecialchars($row['full_name'], ENT_QUOTES)), ENT_QUOTES) ?>, itemLabel: <?= htmlspecialchars(json_encode(t('administrator')), ENT_QUOTES) ?>, actionText: <?= htmlspecialchars(json_encode(t('activate_user')), ENT_QUOTES) ?>, color: 'emerald', icon: 'fa-solid fa-user-check'});"
                                             >
 
                                                 <i class="fa-solid fa-user-check"></i>
@@ -960,7 +949,7 @@ $valid_departments = [
                                             type="button"
                                             class="bg-amber-500 hover:bg-amber-600 text-white px-3 py-2 rounded-xl text-sm transition"
                                             title="Unlock account"
-                                            onclick="openConfirmModal({form: this.closest('form'), title: <?= json_encode(t('unlock_account') ?: 'Unlock Account') ?>, message: <?= json_encode(t('unlock_account_confirm') ?: 'This will reset the failed login counter and unlock this account.') ?>, itemName: <?= json_encode(htmlspecialchars($row['full_name'], ENT_QUOTES)) ?>, itemLabel: <?= json_encode(t('administrator')) ?>, actionText: <?= json_encode(t('unlock_account') ?: 'Unlock Account') ?>, color: 'amber', icon: 'fa-solid fa-lock-open'});"
+                                            onclick="openConfirmModal({form: this.closest('form'), title: <?= htmlspecialchars(json_encode(t('unlock_account') ?: 'Unlock Account'), ENT_QUOTES) ?>, message: <?= htmlspecialchars(json_encode(t('unlock_account_confirm') ?: 'This will reset the failed login counter and unlock this account.'), ENT_QUOTES) ?>, itemName: <?= htmlspecialchars(json_encode(htmlspecialchars($row['full_name'], ENT_QUOTES)), ENT_QUOTES) ?>, itemLabel: <?= htmlspecialchars(json_encode(t('administrator')), ENT_QUOTES) ?>, actionText: <?= htmlspecialchars(json_encode(t('unlock_account') ?: 'Unlock Account'), ENT_QUOTES) ?>, color: 'amber', icon: 'fa-solid fa-lock-open'});"
                                         >
 
                                             <i class="fa-solid fa-lock-open"></i>

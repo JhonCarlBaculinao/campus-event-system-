@@ -1,6 +1,5 @@
 <?php
 
-session_start();
 
 include 'db_connect.php';
 require 'lang.php';
@@ -27,7 +26,7 @@ $success = '';
 |--------------------------------------------------------------------------
 */
 
-pg_query($conn, "
+$pdo->query("
     CREATE TABLE IF NOT EXISTS system_settings (
         setting_key   VARCHAR(100) PRIMARY KEY,
         setting_value TEXT,
@@ -42,16 +41,16 @@ pg_query($conn, "
 |--------------------------------------------------------------------------
 */
 
-pg_query($conn, "
+$pdo->query("
     INSERT INTO system_settings (setting_key, setting_value)
     VALUES ('student_access', '1')
-    ON CONFLICT (setting_key) DO NOTHING
+    ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)
 ");
 
-pg_query($conn, "
+$pdo->query("
     INSERT INTO system_settings (setting_key, setting_value)
     VALUES ('organizer_access', '1')
-    ON CONFLICT (setting_key) DO NOTHING
+    ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)
 ");
 
 
@@ -78,15 +77,11 @@ if (
 
     } else {
 
-        $current_result = pg_query_params(
-            $conn,
-            "SELECT setting_value
+        $current_result = $pdo->prepare("SELECT setting_value
              FROM system_settings
-             WHERE setting_key = $1",
-            array($setting_key)
-        );
+             WHERE setting_key = ?"); $current_result->execute(array($setting_key));
 
-        $current = pg_fetch_assoc($current_result);
+        $current = $current_result->fetch(PDO::FETCH_ASSOC);
 
         if (!$current) {
 
@@ -96,17 +91,11 @@ if (
 
             $new_value = ($current['setting_value'] === '1') ? '0' : '1';
 
-            pg_query_params(
-                $conn,
-                "UPDATE system_settings
-                 SET setting_value = $1,
-                     updated_at   = NOW()
-                 WHERE setting_key = $2",
-                array(
-                    $new_value,
-                    $setting_key
-                )
-            );
+$setting_update = $pdo->prepare("UPDATE system_settings
+     SET setting_value = ?,
+         updated_at = NOW()
+     WHERE setting_key = ?");
+$setting_update->execute([$new_value, $setting_key]);
 
             /*
             | Audit log
@@ -117,26 +106,12 @@ if (
 
             $state = ($new_value === '1') ? 'enabled' : 'disabled';
 
-            pg_query_params(
-                $conn,
-                "INSERT INTO notifications
-                (
-                    user_id,
-                    message,
-                    type
-                )
-                VALUES
-                (
-                    $1,
-                    $2,
-                    $3
-                )",
-                array(
-                    $admin_id,
-                    'System setting "' . $label . '" was ' . $state . ' by administrator.',
-                    'admin_action'
-                )
-            );
+            $notification_stmt = $pdo->prepare("INSERT INTO notifications (user_id, message, type) VALUES (?, ?, ?)");
+            $notification_stmt->execute([
+                $admin_id,
+                'System setting "' . $label . '" was ' . $state . ' by administrator.',
+                'admin_action'
+            ]);
 
             $success = $label . ' has been ' . $state . '.';
         }
@@ -150,15 +125,12 @@ if (
 |--------------------------------------------------------------------------
 */
 
-$settings_result = pg_query(
-    $conn,
-    "SELECT setting_key, setting_value
+$settings_result = $pdo->query("SELECT setting_key, setting_value
      FROM system_settings
-     ORDER BY setting_key"
-);
+     ORDER BY setting_key");
 
 $settings = [];
-while ($row = pg_fetch_assoc($settings_result)) {
+while ($row = $settings_result->fetch(PDO::FETCH_ASSOC)) {
     $settings[$row['setting_key']] = $row['setting_value'];
 }
 
@@ -174,17 +146,17 @@ $organizer_access = $settings['organizer_access'] ?? '1';
 
 $db_status = ($conn) ? 'Connected' : 'Disconnected';
 
-$total_users_result = pg_query($conn, "SELECT COUNT(*) AS cnt FROM users");
-$total_users = (int) pg_fetch_result($total_users_result, 0, 'cnt');
+$total_users_result = $pdo->query("SELECT COUNT(*) AS cnt FROM users");
+$total_users = (int) ($total_users_result->fetch(PDO::FETCH_ASSOC)['cnt'] ?? 0);
 
-$total_events_result = pg_query($conn, "SELECT COUNT(*) AS cnt FROM events");
-$total_events = (int) pg_fetch_result($total_events_result, 0, 'cnt');
+$total_events_result = $pdo->query("SELECT COUNT(*) AS cnt FROM events");
+$total_events = (int) ($total_events_result->fetch(PDO::FETCH_ASSOC)['cnt'] ?? 0);
 
-$total_students_result = pg_query($conn, "SELECT COUNT(*) AS cnt FROM users WHERE role = 'student'");
-$total_students = (int) pg_fetch_result($total_students_result, 0, 'cnt');
+$total_students_result = $pdo->query("SELECT COUNT(*) AS cnt FROM users WHERE role = 'student'");
+$total_students = (int) ($total_students_result->fetch(PDO::FETCH_ASSOC)['cnt'] ?? 0);
 
-$total_organizers_result = pg_query($conn, "SELECT COUNT(*) AS cnt FROM users WHERE role = 'organizer'");
-$total_organizers = (int) pg_fetch_result($total_organizers_result, 0, 'cnt');
+$total_organizers_result = $pdo->query("SELECT COUNT(*) AS cnt FROM users WHERE role = 'organizer'");
+$total_organizers = (int) ($total_organizers_result->fetch(PDO::FETCH_ASSOC)['cnt'] ?? 0);
 
 
 /*
@@ -196,28 +168,11 @@ $total_organizers = (int) pg_fetch_result($total_organizers_result, 0, 'cnt');
 $full_name = $_SESSION['full_name'] ?? '';
 $first_name = explode(' ', trim($full_name))[0];
 
-$unread_count = (int) pg_fetch_result(
-    pg_query_params(
-        $conn,
-        "SELECT COUNT(*)
-         FROM notifications
-         WHERE user_id = $1
-           AND is_read = false",
-        array($admin_id)
-    ),
-    0,
-    0
-);
+$unread_stmt = $pdo->prepare("SELECT COUNT(*) FROM notifications WHERE user_id = ? AND is_read = 0");
+$unread_stmt->execute([$admin_id]);
+$unread_count = (int) $unread_stmt->fetchColumn();
 
-$recent_notifications = pg_query_params(
-    $conn,
-    "SELECT notification_id, type, message, is_read, created_at
-     FROM notifications
-     WHERE user_id = $1
-     ORDER BY created_at DESC
-     LIMIT 5",
-    array($admin_id)
-);
+$recent_notifications = $pdo->prepare("SELECT notification_id, type, message, is_read, created_at FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 5"); $recent_notifications->execute([$admin_id]);
 
 $role_label  = 'Administrator';
 $page_title  = 'System Settings — RMC Events';

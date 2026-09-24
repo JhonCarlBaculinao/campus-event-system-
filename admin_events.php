@@ -1,6 +1,5 @@
 <?php
 
-session_start();
 
 include 'db_connect.php';
 require 'send_email.php';
@@ -35,44 +34,33 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
 
         /* Get event */
 
-        $event_result = pg_query_params(
-            $conn,
-
-            "SELECT
-                e.title,
-                e.event_date,
-                e.start_time,
-                e.end_time,
-                e.venue,
-                e.organizer_id,
-                u.full_name AS organizer_name,
-                u.email AS organizer_email,
-                u.email_notifications AS organizer_email_notif
+        $event_result = $pdo->prepare("SELECT
+                e.title, e.event_date, e.start_time, e.end_time, e.venue,
+                e.organizer_id, u.full_name AS organizer_name,
+                u.email AS organizer_email, u.email_notifications AS organizer_email_notif
              FROM events e
              JOIN users u
              ON e.organizer_id = u.user_id
-             WHERE e.event_id = $1",
+             WHERE e.event_id = ?");
 
-            [$event_id]
-        );
+        $event_result->execute([$event_id]);
 
-        $event = pg_fetch_assoc($event_result);
+        $event = $event_result->fetch(PDO::FETCH_ASSOC);
 
 
         if ($event) {
 
             /* Update status */
 
-            pg_query_params(
-                $conn,
-
-                "UPDATE events
+            $pdo->prepare("UPDATE events
                  SET status = 'approved'
-                 WHERE event_id = $1
-                 AND status = 'pending'",
+                 WHERE event_id = ?
+                 AND status = 'pending'")->execute([$event_id]);
 
-                [$event_id]
-            );
+
+            /* Admin success notification */
+
+            $action_msg = 'Event approved successfully.';
 
 
             /* =================================================
@@ -85,33 +73,25 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
                 '" has been approved and is now available to students.';
 
 
-            pg_query_params(
-                $conn,
-
-                "INSERT INTO notifications
+            $pdo->prepare("INSERT INTO notifications
                 (
-                    user_id,
-                    message,
-                    type
+                    user_id, message, type
                 )
                 VALUES
                 (
-                    $1,
-                    $2,
-                    $3
-                )",
-
-                [
+                    ?,
+                    ?,
+                    ?
+                )")->execute([
                     $event['organizer_id'],
                     $organizer_message,
                     'event_approval'
-                ]
-            );
+                ]);
 
 
             /* Organizer Gmail */
 
-            $org_email_on = ($event['organizer_email_notif'] ?? 'f') === 't';
+            $org_email_on = ($event['organizer_email_notif'] ?? 'f') == 1;
 
             if ($org_email_on && !empty($event['organizer_email'])) {
 
@@ -157,20 +137,16 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
                ALL STUDENTS
                ================================================= */
 
-            $students = pg_query(
-                $conn,
-
-                "SELECT
+            $students = $pdo->query("SELECT
                     user_id,
                     full_name,
                     email,
                     email_notifications
                  FROM users
-                 WHERE role = 'student'"
-            );
+                 WHERE role = 'student'");
 
 
-            while ($student = pg_fetch_assoc($students)) {
+            while ($student = $students->fetch(PDO::FETCH_ASSOC)) {
 
                 $student_message =
                     'A new event "' .
@@ -180,33 +156,25 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
 
                 /* Site notification */
 
-                pg_query_params(
-                    $conn,
-
-                    "INSERT INTO notifications
+                $pdo->prepare("INSERT INTO notifications
                     (
-                        user_id,
-                        message,
-                        type
+                        user_id, message, type
                     )
                     VALUES
                     (
-                        $1,
-                        $2,
-                        $3
-                    )",
-
-                    [
+                        ?,
+                        ?,
+                        ?
+                    )")->execute([
                         $student['user_id'],
                         $student_message,
                         'new_event'
-                    ]
-                );
+                    ]);
 
 
                 /* Gmail */
 
-                $stud_email_on = ($student['email_notifications'] ?? 'f') === 't';
+                $stud_email_on = ($student['email_notifications'] ?? 'f') == 1;
 
                 if ($stud_email_on && !empty($student['email'])) {
 
@@ -256,45 +224,30 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
                OTHER ADMINS
                ================================================= */
 
-         $admins = pg_query_params(
-    $conn,
+            $admins = $pdo->prepare("SELECT user_id, email, full_name FROM users WHERE role = 'admin' AND user_id != ?");
+            $admins->execute([$_SESSION['user_id']]);
 
-    "SELECT user_id, email, full_name
-     FROM users
-     WHERE role = 'admin'
-     AND user_id != $1",
+            while ($admin = $admins->fetch(PDO::FETCH_ASSOC)) {
 
-    [$_SESSION['user_id']]
-);
-
-            while ($admin = pg_fetch_assoc($admins)) {
-
-                pg_query_params(
-                    $conn,
-
-                    "INSERT INTO notifications
+                $pdo->prepare("INSERT INTO notifications
                     (
-                        user_id,
-                        message,
-                        type
+                        user_id, message, type
                     )
                     VALUES
                     (
-                        $1,
-                        $2,
-                        $3
-                    )",
-
-                    [
+                        ?,
+                        ?,
+                        ?
+                    )")->execute([
                         $admin['user_id'],
 
                         'Event "' .
                         $event['title'] .
                         '" has been approved.',
 
+
                         'event_approval'
-                    ]
-                );
+                    ]);
 
 
                 if (!empty($admin['email'])) {
@@ -330,40 +283,32 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
 
         /* Get event */
 
-        $event_result = pg_query_params(
-            $conn,
-
-            "SELECT
-                e.title,
-                e.organizer_id,
-                u.full_name AS organizer_name,
-                u.email AS organizer_email,
-                u.email_notifications AS organizer_email_notif
+        $event_result = $pdo->prepare("SELECT
+                e.title, e.organizer_id, u.full_name AS organizer_name,
+                u.email AS organizer_email, u.email_notifications AS organizer_email_notif
              FROM events e
              JOIN users u
              ON e.organizer_id = u.user_id
-             WHERE e.event_id = $1",
+             WHERE e.event_id = ?");
 
-            [$event_id]
-        );
+        $event_result->execute([$event_id]);
 
-        $event = pg_fetch_assoc($event_result);
+        $event = $event_result->fetch(PDO::FETCH_ASSOC);
 
 
         if ($event) {
 
             /* Update status */
 
-            pg_query_params(
-                $conn,
-
-                "UPDATE events
+            $pdo->prepare("UPDATE events
                  SET status = 'rejected'
-                 WHERE event_id = $1
-                 AND status = 'pending'",
+                 WHERE event_id = ?
+                 AND status = 'pending'")->execute([$event_id]);
 
-                [$event_id]
-            );
+
+            /* Admin rejection notification (red error style) */
+
+            $reject_msg = 'Event rejected successfully.';
 
 
             /* =================================================
@@ -376,37 +321,29 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
                 '" has been rejected by the administrator.';
 
 
-            pg_query_params(
-                $conn,
-
-                "INSERT INTO notifications
+            $pdo->prepare("INSERT INTO notifications
                 (
-                    user_id,
-                    message,
-                    type
+                    user_id, message, type
                 )
                 VALUES
                 (
-                    $1,
-                    $2,
-                    $3
-                )",
-
-                [
+                    ?,
+                    ?,
+                    ?
+                )")->execute([
                     $event['organizer_id'],
                     $message,
                     'event_rejection'
-                ]
-            );
+                ]);
 
 
             /* Gmail */
 
-            $org_email_on = ($event['organizer_email_notif'] ?? 'f') === 't';
+            $org_email_on = ($event['organizer_email_notif'] ?? 'f') == 1;
 
             if ($org_email_on && !empty($event['organizer_email'])) {
 
-                send_email_deferred(
+                    send_email_deferred(
 
                     $event['organizer_email'],
 
@@ -440,16 +377,10 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
 
         $event_id = (int) $_POST['archive_id'];
 
-        pg_query_params(
-            $conn,
-
-            "UPDATE events
+        $pdo->prepare("UPDATE events
              SET status = 'archived'
-             WHERE event_id = $1
-               AND status = 'approved'",
-
-            [$event_id]
-        );
+             WHERE event_id = ?
+               AND status = 'approved'")->execute([$event_id]);
 
         $action_msg = t('event_archived_msg');
     }
@@ -463,16 +394,10 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
 
         $event_id = (int) $_POST['unarchive_id'];
 
-        pg_query_params(
-            $conn,
-
-            "UPDATE events
+        $pdo->prepare("UPDATE events
              SET status = 'approved'
-             WHERE event_id = $1
-               AND status = 'archived'",
-
-            [$event_id]
-        );
+             WHERE event_id = ?
+               AND status = 'archived'")->execute([$event_id]);
 
         $action_msg = t('event_unarchived_msg');
     }
@@ -480,24 +405,42 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
 
     /* =====================================================
        DELETE EVENT  (soft-delete, analytics preserved)
+       Saves the current status into previous_status so it
+       can be restored later.
        ===================================================== */
 
     if (isset($_POST['delete_id'])) {
 
         $event_id = (int) $_POST['delete_id'];
 
-        pg_query_params(
-            $conn,
-
-            "UPDATE events
-             SET status = 'deleted'
-             WHERE event_id = $1
-               AND status != 'deleted'",
-
-            [$event_id]
-        );
+        $pdo->prepare("UPDATE events
+             SET previous_status = status,
+                 status = 'deleted'
+             WHERE event_id = ?
+               AND status != 'deleted'")->execute([$event_id]);
 
         $action_msg = t('event_deleted_msg');
+    }
+
+
+    /* =====================================================
+       RESTORE EVENT  (undo soft-delete)
+       Puts status back to whatever it was before delete
+       (pending / approved / archived / rejected / cancelled).
+       Falls back to 'pending' if previous_status was never set.
+       ===================================================== */
+
+    if (isset($_POST['restore_id'])) {
+
+        $event_id = (int) $_POST['restore_id'];
+
+        $pdo->prepare("UPDATE events
+             SET status = COALESCE(previous_status, 'pending'),
+                 previous_status = NULL
+             WHERE event_id = ?
+               AND status = 'deleted'")->execute([$event_id]);
+
+        $action_msg = t('event_restored_msg');
     }
 
 
@@ -522,20 +465,16 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
             foreach ($event_ids as $eid) {
 
                 if ($action === 'bulk_archive') {
-                    $r = pg_query_params($conn,
-                        "UPDATE events SET status = 'archived' WHERE event_id = $1 AND status = 'approved'",
-                        [$eid]
-                    );
+                    $r = $pdo->prepare("UPDATE events SET status = 'archived' WHERE event_id = ? AND status = 'approved'"); $r->execute([$eid]);
                 } elseif ($action === 'bulk_delete') {
-                    $r = pg_query_params($conn,
-                        "UPDATE events SET status = 'deleted' WHERE event_id = $1 AND status != 'deleted'",
-                        [$eid]
-                    );
+                    $r = $pdo->prepare("UPDATE events SET previous_status = status, status = 'deleted' WHERE event_id = ? AND status != 'deleted'"); $r->execute([$eid]);
+                } elseif ($action === 'bulk_restore') {
+                    $r = $pdo->prepare("UPDATE events SET status = COALESCE(previous_status, 'pending'), previous_status = NULL WHERE event_id = ? AND status = 'deleted'"); $r->execute([$eid]);
                 } else {
                     continue;
                 }
 
-                if ($r && pg_affected_rows($r) > 0) {
+                if ($r && $r->rowCount() > 0) {
                     $processed++;
                 } else {
                     $skipped++;
@@ -570,87 +509,43 @@ $valid_filters = [
     'approved',
     'archived',
     'rejected',
-    'cancelled'
+    'cancelled',
+    'deleted'
 ];
 
 if (!in_array($filter, $valid_filters, true)) {
     $filter = 'all';
 }
 
-$filter_sql = $filter !== 'all'
-    ? ($search !== '' ? "AND e.status = \$2" : "AND e.status = \$1")
+$filter_sql = ($filter !== 'all' && $filter !== 'deleted')
+    ? "AND e.status = ?"
     : '';
+
+/* Only exclude deleted events when we are NOT specifically
+   viewing the "deleted" tab. */
+$exclude_deleted_sql = ($filter !== 'deleted')
+    ? "AND e.status != 'deleted'"
+    : "AND e.status = 'deleted'";
 
 
 if (!empty($search)) {
 
-    $events = pg_query_params(
+    $events = $pdo->prepare("SELECT e.*, u.full_name AS organizer_name FROM events e JOIN users u ON e.organizer_id = u.user_id WHERE e.title LIKE ? $exclude_deleted_sql $filter_sql ORDER BY e.created_at DESC");
 
-        $conn,
+    $params = ['%' . $search . '%'];
+    if ($filter_sql !== '') {
+        $params[] = $filter;
+    }
 
-        "SELECT
-            e.*,
-            u.full_name AS organizer_name
-         FROM events e
-         JOIN users u
-         ON e.organizer_id = u.user_id
-         WHERE e.title ILIKE $1
-           AND e.status != 'deleted'
-           $filter_sql
-         ORDER BY e.created_at DESC",
-
-        $filter !== 'all'
-            ? ['%' . $search . '%', $filter]
-            : ['%' . $search . '%']
-    );
+    $events->execute($params);
 
 } else {
 
-    $events = pg_query_params(
-
-        $conn,
-
-        "SELECT
-            e.*,
-            u.full_name AS organizer_name
-         FROM events e
-         JOIN users u
-         ON e.organizer_id = u.user_id
-         WHERE e.status != 'deleted'
-           $filter_sql
-         ORDER BY e.created_at DESC",
-
-        $filter !== 'all'
-            ? [$filter]
-            : []
-    );
+    $events = $pdo->prepare("SELECT e.*, u.full_name AS organizer_name FROM events e JOIN users u ON e.organizer_id = u.user_id WHERE 1=1 $exclude_deleted_sql $filter_sql ORDER BY e.created_at DESC");
+    $events->execute($filter_sql !== '' ? [$filter] : []);
 }
 
 
-/* =========================================================
-   STATUS BADGE
-   ========================================================= */
-
-function status_badge($status)
-{
-    switch ($status) {
-
-        case 'approved':
-            return 'bg-green-100 text-green-700';
-
-        case 'archived':
-            return 'bg-slate-100 text-slate-700';
-
-        case 'rejected':
-            return 'bg-red-100 text-red-700';
-
-        case 'cancelled':
-            return 'bg-yellow-100 text-yellow-700';
-
-        default:
-            return 'bg-yellow-100 text-yellow-700';
-    }
-}
 
 
 /* =========================================================
@@ -661,28 +556,12 @@ $user_id = (int) $_SESSION['user_id'];
 $full_name = $_SESSION['full_name'] ?? '';
 $first_name = explode(' ', trim($full_name))[0];
 
-$unread_count = (int) pg_fetch_result(
-    pg_query_params(
-        $conn,
-        "SELECT COUNT(*)
-         FROM notifications
-         WHERE user_id = $1
-           AND is_read = false",
-        array($user_id)
-    ),
-    0,
-    0
-);
+$unread_stmt = $pdo->prepare("SELECT COUNT(*) FROM notifications WHERE user_id = ? AND is_read = 0");
+$unread_stmt->execute([$user_id]);
+$unread_count = (int) $unread_stmt->fetchColumn();
 
-$recent_notifications = pg_query_params(
-    $conn,
-    "SELECT notification_id, type, message, is_read, created_at
-     FROM notifications
-     WHERE user_id = $1
-     ORDER BY created_at DESC
-     LIMIT 5",
-    array($user_id)
-);
+$recent_notifications = $pdo->prepare("SELECT notification_id, type, message, is_read, created_at FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 5");
+$recent_notifications->execute([$user_id]);
 
 $role_label  = 'Administrator';
 $page_title  = t('title_manage_events');
@@ -744,6 +623,18 @@ $active_page = 'admin_events';
 
 <?php endif; ?>
 
+<?php if (!empty($reject_msg)): ?>
+
+    <div class="bg-red-50 border border-red-200 text-red-700 rounded-2xl px-5 py-4 mb-8 animate-up">
+
+        <i class="fa-solid fa-circle-xmark mr-2"></i>
+
+        <?= htmlspecialchars($reject_msg); ?>
+
+    </div>
+
+<?php endif; ?>
+
 
 <!-- =========================================================
      EVENTS TABLE
@@ -787,8 +678,8 @@ $active_page = 'admin_events';
 
             <?php if (!empty($search)): ?>
 
-                <a
-                    href="admin_events.php"
+                    <a
+                        href="admin_events.php"
                     class="border border-slate-200 px-4 py-2 rounded-xl text-sm text-slate-600 hover:bg-rmc-50 transition"
                 >
 
@@ -807,18 +698,16 @@ $active_page = 'admin_events';
 
     <div class="flex flex-wrap items-center gap-2 px-6 py-4 border-b border-slate-200 bg-rmc-50/40">
 
-        <?php foreach (['all', 'pending', 'approved', 'archived', 'rejected', 'cancelled'] as $fk): ?>
+<?php foreach (['all', 'pending', 'approved', 'archived', 'rejected', 'cancelled', 'deleted'] as $fk): ?>
 
-            <a
-                href="admin_events.php?filter=<?= $fk; ?>"
-                class="px-4 py-2 rounded-xl text-sm font-semibold transition <?= $filter === $fk ? 'bg-rmc-800 text-white' : 'bg-white text-slate-600 border border-slate-200 hover:bg-rmc-100'; ?>"
-            >
+    <a href="admin_events.php?filter=<?= $fk; ?>"
+       class="px-4 py-2 rounded-xl text-sm font-semibold transition <?= $filter === $fk ? 'bg-rmc-800 text-white' : 'bg-white text-slate-600 border border-slate-200 hover:bg-rmc-100'; ?>">
 
-                <?= htmlspecialchars($fk === 'all' ? t('filter_all') : ucfirst($fk)); ?>
+        <?= htmlspecialchars($fk === 'all' ? t('filter_all') : ucfirst($fk)); ?>
 
-            </a>
+    </a>
 
-        <?php endforeach; ?>
+<?php endforeach; ?>
 
     </div>
 
@@ -840,23 +729,38 @@ $active_page = 'admin_events';
 
                 <input type="hidden" name="bulk_action" id="bulkEventAction" value="">
 
-                <button
-                    type="button"
-                    class="px-4 py-2 rounded-xl text-sm font-semibold bg-amber-100 text-amber-700 hover:bg-amber-200 transition inline-flex items-center gap-2"
-                    onclick="submitBulkEvent('bulk_archive')"
-                >
-                    <i class="fa-solid fa-box-archive"></i>
-                    <?= t('bulk_archive_events'); ?>
-                </button>
+                <?php if ($filter === 'deleted'): ?>
 
-                <button
-                    type="button"
-                    class="px-4 py-2 rounded-xl text-sm font-semibold bg-red-100 text-red-700 hover:bg-red-200 transition inline-flex items-center gap-2"
-                    onclick="submitBulkEvent('bulk_delete')"
-                >
-                    <i class="fa-solid fa-trash"></i>
-                    <?= t('bulk_delete_events'); ?>
-                </button>
+                    <button
+                        type="button"
+                        class="px-4 py-2 rounded-xl text-sm font-semibold bg-emerald-100 text-emerald-700 hover:bg-emerald-200 transition inline-flex items-center gap-2"
+                        onclick="submitBulkEvent('bulk_restore')"
+                    >
+                        <i class="fa-solid fa-rotate-left"></i>
+                        <?= t('bulk_restore_events'); ?>
+                    </button>
+
+                <?php else: ?>
+
+                    <button
+                        type="button"
+                        class="px-4 py-2 rounded-xl text-sm font-semibold bg-amber-100 text-amber-700 hover:bg-amber-200 transition inline-flex items-center gap-2"
+                        onclick="submitBulkEvent('bulk_archive')"
+                    >
+                        <i class="fa-solid fa-box-archive"></i>
+                        <?= t('bulk_archive_events'); ?>
+                    </button>
+
+                    <button
+                        type="button"
+                        class="px-4 py-2 rounded-xl text-sm font-semibold bg-red-100 text-red-700 hover:bg-red-200 transition inline-flex items-center gap-2"
+                        onclick="submitBulkEvent('bulk_delete')"
+                    >
+                        <i class="fa-solid fa-trash"></i>
+                        <?= t('bulk_delete_events'); ?>
+                    </button>
+
+                <?php endif; ?>
 
             </form>
 
@@ -913,7 +817,7 @@ $active_page = 'admin_events';
 
             <tbody>
 
-                <?php if (pg_num_rows($events) === 0): ?>
+                <?php if ($events->rowCount() === 0): ?>
 
                     <tr>
 
@@ -940,9 +844,9 @@ $active_page = 'admin_events';
                 <?php endif; ?>
 
 
-                <?php while ($row = pg_fetch_assoc($events)): ?>
+                <?php while ($row = $events->fetch(PDO::FETCH_ASSOC)): ?>
 
-                    <tr class="border-b border-slate-100 hover:bg-rmc-50/40 transition <?= $row['status'] === 'archived' ? 'bg-slate-50 opacity-75' : ''; ?>">
+                    <tr class="border-b border-slate-100 hover:bg-rmc-50/40 transition <?= $row['status'] === 'archived' ? 'bg-slate-50 opacity-75' : ''; ?> <?= $row['status'] === 'deleted' ? 'bg-red-50/50 opacity-75' : ''; ?>">
 
                         <td class="px-6 py-5 text-center">
                             <input
@@ -1029,7 +933,7 @@ $active_page = 'admin_events';
                                             type="button"
                                             class="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-xl text-sm transition"
                                             title="<?= t('reject_event'); ?>"
-                                            onclick="openConfirmModal({form: this.closest('form'), title: <?= json_encode(t('reject_event')) ?>, message: <?= json_encode(t('reject_event_confirm')) ?>, itemName: <?= json_encode(htmlspecialchars($row['title'], ENT_QUOTES)) ?>, itemLabel: <?= json_encode(t('event')) ?>, actionText: <?= json_encode(t('reject_event')) ?>, color: 'red', icon: 'fa-solid fa-xmark'});"
+                                            onclick="openConfirmModal({form: this.closest('form'), title: <?= htmlspecialchars(json_encode(t('reject_event')), ENT_QUOTES) ?>, message: <?= htmlspecialchars(json_encode(t('reject_event_confirm')), ENT_QUOTES) ?>, itemName: <?= htmlspecialchars(json_encode(htmlspecialchars($row['title'], ENT_QUOTES)), ENT_QUOTES) ?>, itemLabel: <?= htmlspecialchars(json_encode(t('event')), ENT_QUOTES) ?>, actionText: <?= htmlspecialchars(json_encode(t('reject_event')), ENT_QUOTES) ?>, color: 'red', icon: 'fa-solid fa-xmark'});"
                                         >
 
                                             <i class="fa-solid fa-xmark"></i>
@@ -1092,6 +996,33 @@ $active_page = 'admin_events';
 
                                     </form>
 
+                                <?php elseif ($row['status'] === "deleted"): ?>
+
+                                    <!-- RESTORE -->
+
+                                    <form method="POST" data-action-form="<?= $row['event_id']; ?>-restore">
+
+                                        <?= csrf_field(); ?>
+
+                                        <input
+                                            type="hidden"
+                                            name="restore_id"
+                                            value="<?= $row['event_id']; ?>"
+                                        >
+
+                                        <button
+                                            type="button"
+                                            class="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-xl text-sm transition"
+                                            title="<?= t('restore_event'); ?>"
+                                            onclick="openConfirmModal({form: this.closest('form'), title: <?= htmlspecialchars(json_encode(t('restore_event')), ENT_QUOTES) ?>, message: <?= htmlspecialchars(json_encode(t('restore_confirm')), ENT_QUOTES) ?>, itemName: <?= htmlspecialchars(json_encode(htmlspecialchars($row['title'], ENT_QUOTES)), ENT_QUOTES) ?>, itemLabel: <?= htmlspecialchars(json_encode(t('event')), ENT_QUOTES) ?>, actionText: <?= htmlspecialchars(json_encode(t('restore_event')), ENT_QUOTES) ?>, color: 'emerald', icon: 'fa-solid fa-rotate-left'});"
+                                        >
+
+                                            <i class="fa-solid fa-rotate-left"></i>
+
+                                        </button>
+
+                                    </form>
+
                                 <?php else: ?>
 
                                     <span class="text-slate-400 text-sm italic px-2">
@@ -1105,28 +1036,32 @@ $active_page = 'admin_events';
 
                                 <!-- DELETE (available for every non-deleted status) -->
 
-                                <form method="POST" data-action-form="<?= $row['event_id']; ?>-delete">
+                                <?php if ($row['status'] !== 'deleted'): ?>
 
-                                    <?= csrf_field(); ?>
+                                    <form method="POST" data-action-form="<?= $row['event_id']; ?>-delete">
 
-                                    <input
-                                        type="hidden"
-                                        name="delete_id"
-                                        value="<?= $row['event_id']; ?>"
-                                    >
+                                        <?= csrf_field(); ?>
 
-                                    <button
-                                        type="button"
-                                        class="bg-red-100 hover:bg-red-200 text-red-700 px-4 py-2 rounded-xl text-sm transition"
-                                        title="<?= t('delete_event'); ?>"
-                                        onclick="openConfirmModal({form: this.closest('form'), title: <?= htmlspecialchars(json_encode(t('delete_event')), ENT_QUOTES) ?>, message: <?= htmlspecialchars(json_encode(t('delete_confirm')), ENT_QUOTES) ?>, itemName: <?= htmlspecialchars(json_encode(htmlspecialchars($row['title'], ENT_QUOTES)), ENT_QUOTES) ?>, itemLabel: <?= htmlspecialchars(json_encode(t('event')), ENT_QUOTES) ?>, actionText: <?= htmlspecialchars(json_encode(t('delete_event')), ENT_QUOTES) ?>, color: 'red', icon: 'fa-solid fa-trash'});"
-                                    >
+                                        <input
+                                            type="hidden"
+                                            name="delete_id"
+                                            value="<?= $row['event_id']; ?>"
+                                        >
 
-                                        <i class="fa-solid fa-trash"></i>
+                                        <button
+                                            type="button"
+                                            class="bg-red-100 hover:bg-red-200 text-red-700 px-4 py-2 rounded-xl text-sm transition"
+                                            title="<?= t('delete_event'); ?>"
+                                            onclick="openConfirmModal({form: this.closest('form'), title: <?= htmlspecialchars(json_encode(t('delete_event')), ENT_QUOTES) ?>, message: <?= htmlspecialchars(json_encode(t('delete_confirm')), ENT_QUOTES) ?>, itemName: <?= htmlspecialchars(json_encode(htmlspecialchars($row['title'], ENT_QUOTES)), ENT_QUOTES) ?>, itemLabel: <?= htmlspecialchars(json_encode(t('event')), ENT_QUOTES) ?>, actionText: <?= htmlspecialchars(json_encode(t('delete_event')), ENT_QUOTES) ?>, color: 'red', icon: 'fa-solid fa-trash'});"
+                                        >
 
-                                    </button>
+                                            <i class="fa-solid fa-trash"></i>
 
-                                </form>
+                                        </button>
+
+                                    </form>
+
+                                <?php endif; ?>
 
                             </div>
 
@@ -1354,10 +1289,24 @@ function submitBulkEvent(action) {
         titles.push(checked[i].getAttribute('data-title'));
     }
 
-    var confirmKey = (action === 'bulk_archive') ? <?= json_encode(t('bulk_archive_confirm')) ?> : <?= json_encode(t('bulk_delete_confirm')) ?>;
-    var actionKey = (action === 'bulk_archive') ? <?= json_encode(t('bulk_archive_events')) ?> : <?= json_encode(t('bulk_delete_events')) ?>;
-    var icon = (action === 'bulk_archive') ? 'fa-solid fa-box-archive' : 'fa-solid fa-trash';
-    var color = (action === 'bulk_archive') ? 'amber' : 'red';
+    var confirmKey, actionKey, icon, color;
+
+    if (action === 'bulk_archive') {
+        confirmKey = <?= json_encode(t('bulk_archive_confirm')) ?>;
+        actionKey = <?= json_encode(t('bulk_archive_events')) ?>;
+        icon = 'fa-solid fa-box-archive';
+        color = 'amber';
+    } else if (action === 'bulk_restore') {
+        confirmKey = <?= json_encode(t('bulk_restore_confirm')) ?>;
+        actionKey = <?= json_encode(t('bulk_restore_events')) ?>;
+        icon = 'fa-solid fa-rotate-left';
+        color = 'emerald';
+    } else {
+        confirmKey = <?= json_encode(t('bulk_delete_confirm')) ?>;
+        actionKey = <?= json_encode(t('bulk_delete_events')) ?>;
+        icon = 'fa-solid fa-trash';
+        color = 'red';
+    }
 
     var form = document.getElementById('bulkEventForm');
     var actionInput = document.getElementById('bulkEventAction');

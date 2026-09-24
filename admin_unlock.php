@@ -20,36 +20,24 @@ if (!empty($_GET['token']) && !empty($_GET['id'])) {
     $user_id   = (int) $_GET['id'];
     $token_hash = hash('sha256', $raw_token);
 
-    $res = pg_query_params(
-        $conn,
-        "SELECT id FROM unlock_tokens
-         WHERE token_hash = $1
-           AND user_id = $2
+    $res = $pdo->prepare("SELECT id FROM unlock_tokens
+         WHERE token_hash = ?
+           AND user_id = ?
            AND used = FALSE
            AND expires_at > NOW()
-         LIMIT 1",
-        [$token_hash, $user_id]
-    );
+         LIMIT 1"); $res->execute([$token_hash, $user_id]);
 
-    if ($res && pg_num_rows($res) > 0) {
+    if ($res && $res->rowCount() > 0) {
 
-        $token_row = pg_fetch_assoc($res);
+        $token_row = $res->fetch(PDO::FETCH_ASSOC);
 
-        pg_query_params(
-            $conn,
-            "UPDATE unlock_tokens SET used = TRUE WHERE id = $1",
-            [(int) $token_row['id']]
-        );
+        $pdo->prepare("UPDATE unlock_tokens SET used = TRUE WHERE id = ?")->execute([(int) $token_row['id']]);
 
-        $admin_ip_rows = pg_query_params(
-            $conn,
-            "SELECT DISTINCT rate_key FROM rate_limits
-             WHERE rate_key LIKE 'login_fail_admin:%'",
-            []
-        );
+        $admin_ip_rows = $pdo->prepare("SELECT DISTINCT rate_key FROM rate_limits
+             WHERE rate_key LIKE 'login_fail_admin:%'"); $admin_ip_rows->execute([]);
 
-        if ($admin_ip_rows && pg_num_rows($admin_ip_rows) > 0) {
-            pg_query($conn, "DELETE FROM rate_limits WHERE rate_key LIKE 'login_fail_admin:%'");
+        if ($admin_ip_rows && $admin_ip_rows->rowCount() > 0) {
+            $pdo->query("DELETE FROM rate_limits WHERE rate_key LIKE 'login_fail_admin:%'");
         }
 
         $success = t('unlock_account_success') ?: 'Your account has been unlocked. You may now log in.';
@@ -92,21 +80,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_GET['locked'])) {
             $error = t('unlock_enter_id') ?: 'Please enter your Admin ID.';
         } else {
 
-            $user_res = pg_query_params(
-                $conn,
-                "SELECT user_id, full_name, email
+            $user_res = $pdo->prepare("SELECT user_id, full_name, email
                  FROM users
-                 WHERE student_id = $1
+                 WHERE student_id = ?
                    AND role = 'admin'
-                 LIMIT 1",
-                [$admin_id_input]
-            );
+                 LIMIT 1");
+            $user_res->execute([$admin_id_input]);
 
-            if (!$user_res || pg_num_rows($user_res) === 0) {
+            if (!$user_res || $user_res->rowCount() === 0) {
                 $error = t('unlock_admin_not_found') ?: 'No admin account found with that ID.';
             } else {
 
-                $admin_user = pg_fetch_assoc($user_res);
+                $admin_user = $user_res->fetch(PDO::FETCH_ASSOC);
 
                 if (empty($admin_user['email']) || !filter_var($admin_user['email'], FILTER_VALIDATE_EMAIL)) {
                     $error = t('unlock_no_email') ?: 'No valid email address is associated with this account.';
@@ -118,12 +103,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_GET['locked'])) {
                     $token_hash = hash('sha256', $raw_token);
                     $expires_at = gmdate('Y-m-d H:i:s', time() + 600);
 
-                    pg_query_params(
-                        $conn,
-                        "INSERT INTO unlock_tokens (user_id, token_hash, expires_at, used)
-                         VALUES ($1, $2, $3, FALSE)",
-                        [(int) $admin_user['user_id'], $token_hash, $expires_at]
-                    );
+                    $pdo->prepare("INSERT INTO unlock_tokens (user_id, token_hash, expires_at, used)
+                         VALUES (?, ?, ?, FALSE)")
+                        ->execute([(int) $admin_user['user_id'], $token_hash, $expires_at]);
 
                     $base_url = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https' : 'http')
                         . '://' . $_SERVER['HTTP_HOST']
@@ -147,7 +129,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_GET['locked'])) {
                         </p>
                         <p style="margin:25px 0;">
                             <a
-                                href="' . $safe_link . '"
+                                    href="' . $safe_link . '"
                                 style="
                                     display:inline-block;
                                     padding:12px 22px;
@@ -171,7 +153,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_GET['locked'])) {
                     $email_body = rmc_email_wrapper($inner);
                     $subject    = 'RMC Events — Account Unlock Request';
 
-                    send_email_deferred($admin_user['email'], $subject, $email_body);
+                    send_notification_email($admin_user['email'], $subject, $email_body);
 
                     $success = t('unlock_email_sent') ?: 'An unlock link has been sent to your registered email address. Check your inbox.';
                 }
@@ -182,7 +164,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_GET['locked'])) {
 
 $page_title = t('title_unlock_account') ?: 'Account Unlock — RMC Events';
 ?>
-<?php include 'partials/head.php'; ?>
+<?php
+        include 'partials/head.php'; ?>
 
 <div class="min-h-screen flex items-center justify-center p-6">
 
@@ -214,7 +197,8 @@ $page_title = t('title_unlock_account') ?: 'Account Unlock — RMC Events';
 
         <!-- SUCCESS MESSAGE -->
 
-        <?php if (!empty($success)): ?>
+        <?php
+        if (!empty($success)): ?>
 
             <div class="mt-6 bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-2xl p-5 text-center" role="alert">
 
@@ -226,25 +210,29 @@ $page_title = t('title_unlock_account') ?: 'Account Unlock — RMC Events';
                     <?= htmlspecialchars($success, ENT_QUOTES, 'UTF-8') ?>
                 </p>
 
-                <?php if (!empty($show_login_link)): ?>
+                <?php
+        if (!empty($show_login_link)): ?>
 
                     <a
-                        href="login.php"
+                            href="login.php"
                         class="inline-block mt-4 px-6 py-2.5 rounded-xl bg-rmc-800 hover:bg-rmc-900 transition duration-300 text-white font-bold shadow-lg"
                     >
                         <i class="fa-solid fa-right-to-bracket mr-2"></i>
                         <?= t('proceed_to_login') ?: 'Proceed to Login →'; ?>
                     </a>
 
-                <?php endif; ?>
+                <?php
+        endif; ?>
 
             </div>
 
-        <?php endif; ?>
+        <?php
+        endif; ?>
 
         <!-- ERROR MESSAGE -->
 
-        <?php if (!empty($error)): ?>
+        <?php
+        if (!empty($error)): ?>
 
             <div class="mt-6 bg-red-50 border border-red-200 text-red-700 rounded-2xl p-5 text-center" role="alert">
 
@@ -256,25 +244,29 @@ $page_title = t('title_unlock_account') ?: 'Account Unlock — RMC Events';
                     <?= htmlspecialchars($error, ENT_QUOTES, 'UTF-8') ?>
                 </p>
 
-                <?php if (!empty($show_login_link)): ?>
+                <?php
+        if (!empty($show_login_link)): ?>
 
                     <a
-                        href="login.php"
+                            href="login.php"
                         class="inline-block mt-4 px-6 py-2.5 rounded-xl bg-rmc-800 hover:bg-rmc-900 transition duration-300 text-white font-bold shadow-lg"
                     >
                         <i class="fa-solid fa-right-to-bracket mr-2"></i>
                         <?= t('proceed_to_login') ?: 'Proceed to Login →'; ?>
                     </a>
 
-                <?php endif; ?>
+                <?php
+        endif; ?>
 
             </div>
 
-        <?php endif; ?>
+        <?php
+        endif; ?>
 
         <!-- LOCKOUT SCREEN (no token, no success yet) -->
 
-        <?php if (empty($success) && empty($error) && !empty($_GET['locked'])): ?>
+        <?php
+        if (empty($success) && empty($error) && !empty($_GET['locked'])): ?>
 
             <div class="mt-6 bg-amber-50 border border-amber-200 text-amber-700 rounded-2xl p-5 text-center" role="alert">
 
@@ -292,11 +284,13 @@ $page_title = t('title_unlock_account') ?: 'Account Unlock — RMC Events';
 
             </div>
 
-        <?php endif; ?>
+        <?php
+        endif; ?>
 
         <!-- SEND UNLOCK EMAIL FORM -->
 
-        <?php if (empty($success) && empty($error) && !empty($_GET['locked'])): ?>
+        <?php
+        if (empty($success) && empty($error) && !empty($_GET['locked'])): ?>
 
             <form
                 method="POST"
@@ -341,24 +335,27 @@ $page_title = t('title_unlock_account') ?: 'Account Unlock — RMC Events';
 
             </form>
 
-        <?php endif; ?>
+        <?php
+        endif; ?>
 
         <!-- INITIAL STATE: no token, no locked, no success/error -->
 
-        <?php if (empty($success) && empty($error) && empty($_GET['token']) && empty($_GET['locked'])): ?>
+        <?php
+        if (empty($success) && empty($error) && empty($_GET['token']) && empty($_GET['locked'])): ?>
 
             <div class="mt-6 text-center text-slate-500">
                 <p><?= t('unlock_no_action') ?: 'No action required. This page is for account lockout recovery.' ?></p>
             </div>
 
-        <?php endif; ?>
+        <?php
+        endif; ?>
 
         <!-- BACK TO LOGIN -->
 
         <div class="text-center mt-6">
 
             <a
-                href="login.php"
+                    href="login.php"
                 class="text-sm font-semibold text-rmc-800 hover:text-rmc-900"
             >
                 <i class="fa-solid fa-arrow-left mr-1"></i>
@@ -371,4 +368,5 @@ $page_title = t('title_unlock_account') ?: 'Account Unlock — RMC Events';
 
 </div>
 
-<?php include_once __DIR__ . '/partials/dark_mode.php'; ?>
+<?php
+        include_once __DIR__ . '/partials/dark_mode.php'; ?>

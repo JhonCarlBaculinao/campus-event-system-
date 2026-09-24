@@ -9,7 +9,7 @@
 |
 | SAFETY / IDEMPOTENCY
 |   Each reminder is claimed atomically with
-|       INSERT ... ON CONFLICT (registration_id, reminder_type) DO NOTHING
+|       INSERT ... ON DUPLICATE KEY UPDATE ... (MySQL equivalent)
 |   so this script can be run as often as you like without ever sending a
 |   duplicate reminder. Concurrent runs are also safe.
 |
@@ -41,7 +41,9 @@ require __DIR__ . '/../send_email.php';
 
 date_default_timezone_set('Asia/Manila');
 
-session_start();
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
 
 /*
 |--------------------------------------------------------------------------
@@ -51,6 +53,19 @@ session_start();
 
 $subject_24h = t('reminder_subject') . ' - ' . t('reminder_24h_badge');
 $subject_1h  = t('reminder_subject') . ' - ' . t('reminder_1h_badge');
+$dry_run = in_array('--dry-run', $argv, true);
+
+if (!$dry_run) {
+    $pdo->exec("CREATE TABLE IF NOT EXISTS event_reminders (
+        reminder_id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+        registration_id INT UNSIGNED NOT NULL,
+        reminder_type VARCHAR(10) NOT NULL,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (reminder_id),
+        UNIQUE KEY uq_event_reminder (registration_id, reminder_type),
+        KEY idx_event_reminder_registration (registration_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+}
 
 /*
 |--------------------------------------------------------------------------
@@ -58,9 +73,8 @@ $subject_1h  = t('reminder_subject') . ' - ' . t('reminder_1h_badge');
 |--------------------------------------------------------------------------
 */
 
-$candidates = pg_query(
-    $conn,
-    "SELECT
+$stmt = $pdo->prepare("
+    SELECT
         r.registration_id,
         r.user_id,
         e.event_id,
@@ -71,24 +85,27 @@ $candidates = pg_query(
         u.full_name,
         u.email,
         u.email_notifications,
-        (e.event_date + e.start_time) AS starts_at
-     FROM registrations r
-     JOIN events e ON e.event_id = r.event_id
-     JOIN users u ON u.user_id = r.user_id
-     WHERE e.status = 'approved'
-       AND r.status = 'registered'
-       AND (e.event_date + e.start_time) > NOW()"
-);
+        CONCAT(e.event_date, ' ', e.start_time) AS starts_at
+    FROM registrations r
+    JOIN events e ON e.event_id = r.event_id
+    JOIN users u ON u.user_id = r.user_id
+    WHERE e.status = 'approved'
+      AND r.status = 'registered'
+      AND CONCAT(e.event_date, ' ', e.start_time) > NOW()
+");
+$stmt->execute();
 
-if (!$candidates) {
-    fwrite(STDERR, "Query failed: " . pg_last_error($conn) . PHP_EOL);
+if (!$stmt) {
+    fwrite(STDERR, "Query failed: " . $pdo->errorInfo()[2] . PHP_EOL);
     exit(1);
 }
+
+$candidates = $stmt;
 
 $sent_count = 0;
 $email_count = 0;
 
-while ($event = pg_fetch_assoc($candidates)) {
+while ($event = $candidates->fetch(PDO::FETCH_ASSOC)) {
 
     $now_ts = time();
     $start_ts = strtotime($event['starts_at']);
@@ -108,26 +125,37 @@ while ($event = pg_fetch_assoc($candidates)) {
 
     foreach ($types as $reminder_type) {
 
+        if ($dry_run) {
+            echo sprintf(
+                "DRY RUN: %s reminder for registration %d, event %d, recipient %s\n",
+                $reminder_type,
+                (int) $event['registration_id'],
+                (int) $event['event_id'],
+                $event['email'] !== '' ? $event['email'] : '(no email)'
+            );
+            $sent_count++;
+            continue;
+        }
+
         /*
         |--------------------------------------------------------------------------
         | Atomically claim this reminder
         |--------------------------------------------------------------------------
         */
 
-        $claim = pg_query_params(
-            $conn,
-            "INSERT INTO event_reminders (registration_id, reminder_type)
-             VALUES ($1, $2)
-             ON CONFLICT (registration_id, reminder_type) DO NOTHING",
-            [$event['registration_id'], $reminder_type]
-        );
+        $claim = $pdo->prepare("
+            INSERT INTO event_reminders (registration_id, reminder_type)
+            VALUES (?, ?)
+            ON DUPLICATE KEY UPDATE reminder_type = VALUES(reminder_type)
+        ");
+        $claim->execute([$event['registration_id'], $reminder_type]);
 
         if (!$claim) {
-            fwrite(STDERR, "Claim failed: " . pg_last_error($conn) . PHP_EOL);
+            fwrite(STDERR, "Claim failed: " . $pdo->errorInfo()[2] . PHP_EOL);
             continue;
         }
 
-        if (pg_affected_rows($claim) !== 1) {
+        if ($claim->rowCount() !== 1) {
             /* Already sent (or claimed by a concurrent run) — skip. */
             continue;
         }
@@ -162,15 +190,14 @@ while ($event = pg_fetch_assoc($candidates)) {
         |--------------------------------------------------------------------------
         */
 
-        $notify = pg_query_params(
-            $conn,
-            "INSERT INTO notifications (user_id, message, type, is_read)
-             VALUES ($1, $2, 'event_reminder', FALSE)",
-            [$event['user_id'], $message]
-        );
+        $notify = $pdo->prepare("
+            INSERT INTO notifications (user_id, message, type, is_read)
+            VALUES (?, ?, 'event_reminder', FALSE)
+        ");
+        $notify->execute([$event['user_id'], $message]);
 
         if (!$notify) {
-            fwrite(STDERR, "Notification insert failed: " . pg_last_error($conn) . PHP_EOL);
+            fwrite(STDERR, "Notification insert failed: " . $pdo->errorInfo()[2] . PHP_EOL);
             continue;
         }
 
@@ -193,34 +220,34 @@ while ($event = pg_fetch_assoc($candidates)) {
                 <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
 
                     <h2>' .
-                    htmlspecialchars(t('reminder_email_hello') . ' ' . $event['full_name'] . '!') .
-                    '</h2>
+                htmlspecialchars(t('reminder_email_hello') . ' ' . $event['full_name'] . '!') .
+                '</h2>
 
                     <p>' .
-                    htmlspecialchars($message) .
-                    '</p>
+                htmlspecialchars($message) .
+                '</p>
 
                     <p>
                         <strong>' .
-                    htmlspecialchars(t('reminder_email_event')) .
-                    ':</strong> ' .
-                    htmlspecialchars($event['title']) .
-                    '<br>
+                htmlspecialchars(t('reminder_email_event')) .
+                ':</strong> ' .
+                htmlspecialchars($event['title']) .
+                '<br>
                         <strong>' .
-                    htmlspecialchars(t('reminder_email_date')) .
-                    ':</strong> ' .
-                    htmlspecialchars(date('M d, Y', strtotime($event['event_date']))) .
-                    '<br>
+                htmlspecialchars(t('reminder_email_date')) .
+                ':</strong> ' .
+                htmlspecialchars(date('M d, Y', strtotime($event['event_date']))) .
+                '<br>
                         <strong>' .
-                    htmlspecialchars(t('reminder_email_time')) .
-                    ':</strong> ' .
-                    htmlspecialchars($time_str) .
-                    '<br>
+                htmlspecialchars(t('reminder_email_time')) .
+                ':</strong> ' .
+                htmlspecialchars($time_str) .
+                '<br>
                         <strong>' .
-                    htmlspecialchars(t('reminder_email_venue')) .
-                    ':</strong> ' .
-                    htmlspecialchars($event['venue']) .
-                    '</p>
+                htmlspecialchars(t('reminder_email_venue')) .
+                ':</strong> ' .
+                htmlspecialchars($event['venue']) .
+                '</p>
 
                     <hr>
 
@@ -232,7 +259,7 @@ while ($event = pg_fetch_assoc($candidates)) {
                 </body>
                 </html>';
 
-            $email_ok = send_notification_email(
+            $email_ok = send_email_deferred(
                 $event['email'],
                 $subject,
                 $email_html

@@ -1,5 +1,4 @@
 <?php
-session_start();
 
 require 'db_connect.php';
 
@@ -19,6 +18,7 @@ require 'db_connect.php';
 |--------------------------------------------------------------------------
 */
 $user_id = $_SESSION['user_id'] ?? null;
+$logout_role = $_SESSION['role'] ?? null;
 
 /*
 |--------------------------------------------------------------------------
@@ -26,48 +26,80 @@ $user_id = $_SESSION['user_id'] ?? null;
 |--------------------------------------------------------------------------
 */
 if ($user_id) {
-    pg_query_params(
-        $conn,
-        "UPDATE users
+    $pdo->prepare("UPDATE users
          SET session_token = NULL
-         WHERE user_id = $1",
-        array((int) $user_id)
-    );
+         WHERE user_id = ?")->execute(array((int) $user_id));
 }
 
 /*
 |--------------------------------------------------------------------------
-| Clear all session variables
+| Remove ONLY this role's auth slot so other tabs/roles stay signed in.
+| Fall back to a full logout when no per-role data exists (legacy flow).
 |--------------------------------------------------------------------------
 */
-$_SESSION = [];
+$had_role_slot = false;
 
-/*
-|--------------------------------------------------------------------------
-| Remove the session cookie
-|--------------------------------------------------------------------------
-*/
-if (ini_get('session.use_cookies')) {
+if (
+    $logout_role !== null &&
+    isset($_SESSION['rmc_auth'][$logout_role]) &&
+    is_array($_SESSION['rmc_auth'][$logout_role])
+) {
+    unset($_SESSION['rmc_auth'][$logout_role]);
+    $had_role_slot = true;
 
-    $params = session_get_cookie_params();
+    foreach (array('user_id', 'role', 'full_name', 'auth_token', 'last_activity', 'login_time') as $key) {
+        unset($_SESSION[$key]);
+    }
 
-    setcookie(
-        session_name(),
-        '',
-        time() - 42000,
-        $params['path'],
-        $params['domain'],
-        $params['secure'],
-        $params['httponly']
-    );
+    if (!empty($_SESSION['rmc_auth'])) {
+        $_SESSION['active_role'] = array_key_first($_SESSION['rmc_auth']);
+    } else {
+        unset($_SESSION['active_role']);
+    }
+}
+
+if (!$had_role_slot) {
+
+    /*
+    |--------------------------------------------------------------------------
+    | Clear all session variables
+    |--------------------------------------------------------------------------
+    */
+    $_SESSION = [];
+
 }
 
 /*
 |--------------------------------------------------------------------------
-| Destroy the session
+| Destroy the session (only when no role sessions remain)
+|--------------------------------------------------------------------------
+| The PHPSESSID cookie is ONLY expired when every role slot is gone,
+| otherwise remaining tabs would lose their authentication.
 |--------------------------------------------------------------------------
 */
-session_destroy();
+if (
+    empty($_SESSION['rmc_auth']) &&
+    empty($_SESSION['user_id'])
+) {
+    if (ini_get('session.use_cookies')) {
+
+        $params = session_get_cookie_params();
+
+        setcookie(
+            session_name(),
+            '',
+            time() - 42000,
+            $params['path'],
+            $params['domain'],
+            $params['secure'],
+            $params['httponly']
+        );
+    }
+
+    session_destroy();
+} else {
+    session_write_close();
+}
 
 /*
 |--------------------------------------------------------------------------
@@ -80,8 +112,8 @@ header('Pragma: no-cache');
 
 /*
 |--------------------------------------------------------------------------
-| Redirect to Login
+| Redirect to Landing Page
 |--------------------------------------------------------------------------
 */
-header('Location: login.php');
+header('Location: landing.php');
 exit;

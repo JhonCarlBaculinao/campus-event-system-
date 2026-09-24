@@ -1,6 +1,5 @@
 <?php
 
-session_start();
 
 require 'db_connect.php';
 require 'lang.php';
@@ -35,12 +34,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $nid = (int) $_POST['mark_single_read'];
 
         if ($nid > 0) {
-            pg_query_params(
-                $conn,
-                "UPDATE notifications SET is_read = true
-                 WHERE notification_id = $1 AND user_id = $2",
-                [$nid, $user_id]
-            );
+            $pdo->prepare("UPDATE notifications SET is_read = 1
+                 WHERE notification_id = ? AND user_id = ?")->execute([$nid, $user_id]);
         }
     }
 
@@ -50,12 +45,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $nid = (int) $_POST['delete_single'];
 
         if ($nid > 0) {
-            pg_query_params(
-                $conn,
-                "DELETE FROM notifications
-                 WHERE notification_id = $1 AND user_id = $2",
-                [$nid, $user_id]
-            );
+            $pdo->prepare("DELETE FROM notifications
+                 WHERE notification_id = ? AND user_id = ?")->execute([$nid, $user_id]);
         }
     }
 
@@ -72,30 +63,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $params = [];
 
             foreach ($ids as $i => $id) {
-                $placeholders[] = '$' . ($i + 1);
+                $placeholders[] = '?';
                 $params[] = $id;
             }
 
             $params[] = $user_id;
             $uid_idx = count($ids) + 1;
 
-            pg_query_params(
-                $conn,
-                "DELETE FROM notifications
+            $pdo->prepare("DELETE FROM notifications
                  WHERE notification_id IN (" . implode(',', $placeholders) . ")
-                 AND user_id = \$" . $uid_idx,
-                $params
-            );
+                  AND user_id = ?")
+                ->execute($params);
         }
     }
 
     // Delete ALL notifications for this user
     if (isset($_POST['delete_all'])) {
-        pg_query_params(
-            $conn,
-            "DELETE FROM notifications WHERE user_id = $1",
-            array($user_id)
-        );
+        $pdo->prepare("DELETE FROM notifications WHERE user_id = ?")->execute(array($user_id));
     }
 
     // Mark selected as read
@@ -111,31 +95,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $params = [];
 
             foreach ($ids as $i => $id) {
-                $placeholders[] = '$' . ($i + 1);
+                $placeholders[] = '?';
                 $params[] = $id;
             }
 
             $params[] = $user_id;
             $uid_idx = count($ids) + 1;
 
-            pg_query_params(
-                $conn,
-                "UPDATE notifications SET is_read = true
-                 WHERE notification_id IN (" . implode(',', $placeholders) . ")
-                 AND user_id = \$" . $uid_idx,
-                $params
-            );
+$pdo->prepare("UPDATE notifications SET is_read = 1
+                 WHERE notification_id IN (" . implode(',', $placeholders) . ") AND user_id = ?")
+                ->execute($params);
         }
     }
 
     // Mark ALL as read
     if (isset($_POST['mark_all_read'])) {
-        pg_query_params(
-            $conn,
-            "UPDATE notifications SET is_read = true
-             WHERE user_id = $1 AND is_read = false",
-            array($user_id)
-        );
+        $pdo->prepare("UPDATE notifications SET is_read = 1
+             WHERE user_id = ? AND is_read = 0")->execute(array($user_id));
     }
 }
 
@@ -143,33 +119,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 /* =========================================================
    UNREAD COUNT (shared header badge)
    ========================================================= */
-
-$unread_count = (int) pg_fetch_result(
-    pg_query_params(
-        $conn,
-        "SELECT COUNT(*)
-         FROM notifications
-         WHERE user_id = $1
-           AND is_read = false",
-        array($user_id)
-    ),
-    0,
-    0
-);
+$stmt = $pdo->prepare("SELECT COUNT(*) FROM notifications WHERE user_id = ? AND is_read = 0");
+$stmt->execute([$user_id]);
+$unread_count = (int)$stmt->fetchColumn();
 
 
 /* =========================================================
    GET NOTIFICATIONS
    ========================================================= */
 
-$notifs = pg_query_params(
-    $conn,
-    "SELECT *
-     FROM notifications
-     WHERE user_id = $1
-     ORDER BY created_at DESC",
-    array($user_id)
-);
+$notifs = $pdo->prepare("SELECT *
+      FROM notifications
+      WHERE user_id = ?
+      ORDER BY created_at DESC"); $notifs->execute(array($user_id));
 
 
 /* =========================================================
@@ -214,7 +176,7 @@ function notif_style($type)
    FIND EVENT RELATED TO NOTIFICATION
    ========================================================= */
 
-function get_notification_link($conn, $notification, $role)
+function get_notification_link($pdo, $notification, $role)
 {
 
     $type = $notification['type'];
@@ -240,19 +202,15 @@ function get_notification_link($conn, $notification, $role)
 
     if (!empty($event_title)) {
 
-        $event_result = pg_query_params(
-            $conn,
-            "SELECT event_id
+        $event_result = $pdo->prepare("SELECT event_id
              FROM events
-             WHERE title = $1
+             WHERE title = ?
              ORDER BY event_id DESC
-             LIMIT 1",
-            array($event_title)
-        );
+             LIMIT 1"); $event_result->execute(array($event_title));
 
-        if ($event_result && pg_num_rows($event_result) > 0) {
+        if ($event_result && $event_result->rowCount() > 0) {
 
-            $event = pg_fetch_assoc($event_result);
+            $event = $event_result->fetch(PDO::FETCH_ASSOC);
 
             $event_id = $event['event_id'];
 
@@ -370,15 +328,8 @@ function get_notification_link($conn, $notification, $role)
    RECENT NOTIFICATIONS (shared header dropdown)
    ========================================================= */
 
-$recent_notifications = pg_query_params(
-    $conn,
-    "SELECT notification_id, type, message, is_read, created_at
-     FROM notifications
-     WHERE user_id = $1
-     ORDER BY created_at DESC
-     LIMIT 5",
-    array($user_id)
-);
+$recent_notifications = $pdo->prepare("SELECT notification_id, type, message, is_read, created_at FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 5");
+$recent_notifications->execute([$user_id]);
 
 
 /* =========================================================
@@ -441,7 +392,7 @@ $active_page = 'notifications';
      NOTIFICATIONS LIST
      ========================================================= -->
 
-<?php if (pg_num_rows($notifs) > 0): ?>
+<?php if ($notifs->rowCount() > 0): ?>
 
 <form method="POST" id="notifForm">
 
@@ -466,9 +417,11 @@ $active_page = 'notifications';
     </label>
 </div>
 
+</form>
+
 <?php endif; ?>
 
-<?php if (pg_num_rows($notifs) === 0): ?>
+<?php if ($notifs->rowCount() === 0): ?>
 
     <div
         class="bg-white rounded-[26px] border border-slate-200 shadow-sm px-6 py-20 text-center animate-up delay-1"
@@ -496,25 +449,25 @@ $active_page = 'notifications';
 
     <div class="space-y-5">
 
-        <?php while ($row = pg_fetch_assoc($notifs)): ?>
+        <?php while ($row = $notifs->fetch(PDO::FETCH_ASSOC)): ?>
 
             <?php
 
             list($icon, $border, $bg) = notif_style($row['type']);
 
             $link = get_notification_link(
-                $conn,
+                $pdo,
                 $row,
                 $role
             );
 
             ?>
 
-            <div class="flex items-start gap-3 <?= $bg; ?> <?= $border; ?> border-l-4 rounded-[26px] shadow-sm p-5 sm:p-6 hover:shadow-lg transition animate-up <?= $row['is_read'] ? 'opacity-70' : ''; ?>">
+            <div data-notif="<?= (int) $row['notification_id']; ?>" class="flex items-start gap-3 <?= $bg; ?> <?= $border; ?> border-l-4 rounded-[26px] shadow-sm p-5 sm:p-6 hover:shadow-lg transition animate-up <?= $row['is_read'] ? 'opacity-70' : ''; ?>">
 
-                <input type="checkbox" name="notif_ids[]" value="<?= $row['notification_id']; ?>" class="notif-checkbox mt-2 rounded">
+                <input type="checkbox" name="notif_ids[]" value="<?= $row['notification_id']; ?>" form="notifForm" class="notif-checkbox mt-2 rounded">
 
-                <a href="<?= htmlspecialchars($link); ?>" class="flex-1 min-w-0 flex gap-4 sm:gap-5" onclick="markNotifRead(<?= (int) $row['notification_id']; ?>);">
+                <a href="<?= htmlspecialchars($link); ?>" class="flex-1 min-w-0 flex gap-4 sm:gap-5" onclick="markNotifRead(event, this, <?= (int) $row['notification_id']; ?>);">
 
                     <div
                         class="w-12 h-12 sm:w-14 sm:h-14 rounded-2xl bg-white flex items-center justify-center text-2xl shadow-sm shrink-0"
@@ -614,8 +567,6 @@ $active_page = 'notifications';
 
 <?php endif; ?>
 
-</form>
-
 <script>
 function toggleAllNotifs(master) {
     var boxes = document.querySelectorAll('.notif-checkbox');
@@ -624,7 +575,9 @@ function toggleAllNotifs(master) {
     }
 }
 
-function markNotifRead(notifId) {
+function markNotifRead(event, link, notifId) {
+    if (event) event.preventDefault();
+    var destination = link ? link.href : '';
     var form = new FormData();
     form.append('mark_single_read', notifId);
 
@@ -644,6 +597,13 @@ function markNotifRead(notifId) {
         }
         var dot = document.querySelector('[data-notif-dot="' + notifId + '"]');
         if (dot) dot.remove();
+        if (destination && destination !== window.location.href && destination !== '#') {
+            window.location.href = destination;
+        }
+    }).catch(function() {
+        if (destination && destination !== window.location.href && destination !== '#') {
+            window.location.href = destination;
+        }
     });
 }
 </script>

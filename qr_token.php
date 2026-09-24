@@ -239,36 +239,48 @@ if (basename($_SERVER['SCRIPT_NAME'] ?? '') === 'qr_token.php') {
         exit;
     }
 
-    $result = pg_query_params(
-        $conn,
-        "
+    /*
+    |--------------------------------------------------------------------------
+    | MySQL-compatible IN(...) query.
+    |
+    | Build one "?" placeholder per registration id, then bind the
+    | user_id first, followed by each rid in order. This replaces the
+    | old PostgreSQL-only "= ANY(?[])" array syntax, which MySQL's PDO
+    | driver does not support at all (it was also malformed — the
+    | prepare()/execute() calls had been collapsed into a single
+    | invalid expression).
+    |--------------------------------------------------------------------------
+    */
+
+    $placeholders = implode(',', array_fill(0, count($rids), '?'));
+
+    $sql = "
         SELECT r.registration_id, r.event_id
         FROM registrations r
         JOIN events e
             ON e.event_id = r.event_id
-        WHERE r.user_id = $1
+        WHERE r.user_id = ?
           AND r.status = 'registered'
           AND e.status = 'approved'
-          AND r.registration_id = ANY($2::int[])
-        ",
-        array(
-            $_SESSION['user_id'],
-            '{' . implode(',', $rids) . '}',
-        )
+          AND r.registration_id IN ($placeholders)
+    ";
+
+    $params = array_merge(
+        array($_SESSION['user_id']),
+        $rids
     );
+
+    $result = $pdo->prepare($sql);
+    $result->execute($params);
 
     $tokens = array();
 
-    if ($result) {
-
-        while ($row = pg_fetch_assoc($result)) {
-            $tokens[(string) $row['registration_id']] =
-                qr_token_mint(
-                    (int) $row['registration_id'],
-                    (int) $row['event_id']
-                );
-        }
-
+    while ($row = $result->fetch(PDO::FETCH_ASSOC)) {
+        $tokens[(string) $row['registration_id']] =
+            qr_token_mint(
+                (int) $row['registration_id'],
+                (int) $row['event_id']
+            );
     }
 
     echo json_encode(array(

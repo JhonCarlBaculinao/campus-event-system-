@@ -1,6 +1,5 @@
 <?php
 
-session_start();
 
 require 'db_connect.php';
 require 'lang.php';
@@ -28,6 +27,22 @@ $first_name = explode(' ', trim($full_name))[0];
 
 $error = '';
 $success = '';
+
+/*
+| Coerces a DB boolean-ish value to a real PHP bool. Some PDO/pgsql
+| configurations return boolean columns as native PHP true/false,
+| others return the string 't'/'f' — this handles both so the app
+| doesn't silently misread the stored value either way.
+*/
+function to_bool($value): bool {
+    if (is_bool($value)) {
+        return $value;
+    }
+    if ($value === null) {
+        return false;
+    }
+    return in_array(strtolower((string) $value), ['t', 'true', '1', 'y', 'yes'], true);
+}
 
 /*
 | Flash-style messages carried via query string (used by the 2FA actions
@@ -60,15 +75,11 @@ $departments = [
 |--------------------------------------------------------------------------
 */
 
-$result = pg_query_params(
-    $conn,
-    "SELECT *
+$result = $pdo->prepare("SELECT *
      FROM users
-     WHERE user_id = $1",
-    [$user_id]
-);
+     WHERE user_id = ?"); $result->execute([$user_id]);
 
-$user = pg_fetch_assoc($result);
+$user = $result->fetch(PDO::FETCH_ASSOC);
 
 if (!$user) {
     session_destroy();
@@ -142,13 +153,9 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
             ? $_POST['appearance']
             : 'system';
 
-        $update = pg_query_params(
-            $conn,
-            "UPDATE users
-             SET appearance = $1
-             WHERE user_id = $2",
-            [$new_appearance, $user_id]
-        );
+        $update = $pdo->prepare("UPDATE users
+             SET appearance = ?
+             WHERE user_id = ?"); $update->execute([$new_appearance, $user_id]);
 
         if ($update) {
 
@@ -182,25 +189,54 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
 
     if (isset($_POST['toggle_email_notifications'])) {
 
-        $current_email_notifications =
-            ($user['email_notifications'] ?? 'f') === 't';
-
-        $new_value = !$current_email_notifications;
-
-        $update = pg_query_params(
-            $conn,
-
-            "UPDATE users
-             SET email_notifications = $1
-             WHERE user_id = $2",
-
-            [
-                $new_value ? 'true' : 'false',
-                $user_id
-            ]
+        $is_ajax = (
+            isset($_POST['ajax']) ||
+            (($_SERVER['HTTP_X_REQUESTED_WITH'] ?? '') === 'XMLHttpRequest')
         );
 
-        if ($update) {
+        $current_email_notifications = to_bool($user['email_notifications'] ?? false);
+        $new_value = !$current_email_notifications;
+
+        $update_ok = false;
+        $debug_info = null;
+
+        try {
+
+            $update = $pdo->prepare("UPDATE users
+                 SET email_notifications = ?
+                 WHERE user_id = ?");
+
+            $update_ok = $update->execute([
+                $new_value ? 1 : 0,
+                $user_id
+            ]);
+
+            if (!$update_ok) {
+                $debug_info = $update->errorInfo();
+            }
+
+        } catch (\PDOException $e) {
+
+            $update_ok = false;
+            $debug_info = $e->getMessage();
+        }
+
+        if ($is_ajax) {
+
+            header('Content-Type: application/json');
+
+            echo json_encode([
+                'success'              => $update_ok,
+                'email_notifications'  => $new_value,
+                'message'              => $update_ok ? null : t('email_notif_update_error'),
+                /* TEMP: remove the 'debug' key once the toggle is confirmed working. */
+                'debug'                => $update_ok ? null : $debug_info
+            ]);
+
+            exit();
+        }
+
+        if ($update_ok) {
 
             header("Location: settings.php");
             exit();
@@ -251,14 +287,11 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
 
             } else {
 
-                $update = pg_query_params(
-                    $conn,
-                    "UPDATE users
-                     SET twofa_secret = $1,
+$update = $pdo->prepare("UPDATE users
+                     SET twofa_secret = ?,
                          session_token = NULL
-                     WHERE user_id = $2",
-                    [$pending_secret, $user_id]
-                );
+WHERE user_id = ?");
+$update->execute([$pending_secret, $user_id]);
 
                 if ($update) {
 
@@ -266,8 +299,11 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
 
                     $new_token = bin2hex(random_bytes(32));
                     $new_hash = hash('sha256', $new_token);
-                    pg_query_params($conn, "UPDATE users SET session_token = $1 WHERE user_id = $2", [$new_hash, $user_id]);
+                    $pdo->prepare("UPDATE users SET session_token = ? WHERE user_id = ?")->execute([$new_hash, $user_id]);
                     $_SESSION['auth_token'] = $new_token;
+                    if (isset($_SESSION['rmc_auth'][$role]) && is_array($_SESSION['rmc_auth'][$role])) {
+                        $_SESSION['rmc_auth'][$role]['auth_token'] = $new_token;
+                    }
                     session_regenerate_id(true);
 
                     $success = t('twofa_enabled_success');
@@ -301,21 +337,21 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
 
         } else {
 
-            $update = pg_query_params(
-                $conn,
-                "UPDATE users
+$update = $pdo->prepare("UPDATE users
                  SET twofa_secret = NULL,
                      session_token = NULL
-                 WHERE user_id = $1",
-                [$user_id]
-            );
+WHERE user_id = ?");
+$update->execute([$user_id]);
 
             if ($update) {
 
                 $new_token = bin2hex(random_bytes(32));
                 $new_hash = hash('sha256', $new_token);
-                pg_query_params($conn, "UPDATE users SET session_token = $1 WHERE user_id = $2", [$new_hash, $user_id]);
+                $pdo->prepare("UPDATE users SET session_token = ? WHERE user_id = ?")->execute([$new_hash, $user_id]);
                 $_SESSION['auth_token'] = $new_token;
+                if (isset($_SESSION['rmc_auth'][$role]) && is_array($_SESSION['rmc_auth'][$role])) {
+                    $_SESSION['rmc_auth'][$role]['auth_token'] = $new_token;
+                }
                 session_regenerate_id(true);
 
                 $success = t('twofa_disabled_success');
@@ -390,37 +426,27 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
 
             if ($role === 'student') {
 
-                $update = pg_query_params(
-                    $conn,
-
-                    "UPDATE users
+$update = $pdo->prepare("UPDATE users
                      SET
-                        full_name = $1,
-                        department = $2
-                     WHERE user_id = $3",
+                         full_name = ?,
+                         department = ?
+WHERE user_id = ?");
 
-                    [
-                        $full_name,
-                        $department,
-                        $user_id
-                    ]
-                );
+$update->execute([
+    $full_name,
+    $department,
+    $user_id
+]);
 
             } else {
 
-                $update = pg_query_params(
-                    $conn,
-
-                    "UPDATE users
+                $update = $pdo->prepare("UPDATE users
                      SET
-                        full_name = $1
-                     WHERE user_id = $2",
-
-                    [
+                        full_name = ?
+                     WHERE user_id = ?"); $update->execute([
                         $full_name,
                         $user_id
-                    ]
-                );
+                    ]);
             }
 
 
@@ -443,17 +469,11 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
                 |--------------------------------------------------------------------------
                 */
 
-                $result = pg_query_params(
-                    $conn,
-
-                    "SELECT *
+                $result = $pdo->prepare("SELECT *
                      FROM users
-                     WHERE user_id = $1",
+                     WHERE user_id = ?"); $result->execute([$user_id]);
 
-                    [$user_id]
-                );
-
-                $user = pg_fetch_assoc($result);
+                $user = $result->fetch(PDO::FETCH_ASSOC);
 
             } else {
 
@@ -532,32 +552,27 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
                     PASSWORD_DEFAULT
                 );
 
-            $update = pg_query_params(
-                $conn,
-
-                "UPDATE users
-                 SET password = $1,
+$update = $pdo->prepare("UPDATE users
+                 SET password = ?,
                      session_token = NULL
-                 WHERE user_id = $2",
+WHERE user_id = ?");
 
-                [
-                    $hashed_password,
-                    $user_id
-                ]
-            );
+$update->execute([
+    $hashed_password,
+    $user_id
+]);
 
             if ($update) {
 
                 $new_token = bin2hex(random_bytes(32));
                 $new_hash = hash('sha256', $new_token);
 
-                pg_query_params(
-                    $conn,
-                    "UPDATE users SET session_token = $1 WHERE user_id = $2",
-                    [$new_hash, $user_id]
-                );
+                $pdo->prepare("UPDATE users SET session_token = ? WHERE user_id = ?")->execute([$new_hash, $user_id]);
 
                 $_SESSION['auth_token'] = $new_token;
+                if (isset($_SESSION['rmc_auth'][$role]) && is_array($_SESSION['rmc_auth'][$role])) {
+                    $_SESSION['rmc_auth'][$role]['auth_token'] = $new_token;
+                }
                 session_regenerate_id(true);
 
                 $success = t('password_changed_settings');
@@ -577,35 +592,19 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
 |--------------------------------------------------------------------------
 */
 
-$emailOn = ($user['email_notifications'] ?? 'f') === 't';
+$emailOn = to_bool($user['email_notifications'] ?? false);
 
 
 /* =========================================================
    UNREAD COUNT + RECENT NOTIFICATIONS (shared header)
    ========================================================= */
 
-$unread_count = (int) pg_fetch_result(
-    pg_query_params(
-        $conn,
-        "SELECT COUNT(*)
-         FROM notifications
-         WHERE user_id = $1
-           AND is_read = false",
-        array($user_id)
-    ),
-    0,
-    0
-);
+$stmt = $pdo->prepare("SELECT COUNT(*) FROM notifications WHERE user_id = ? AND is_read = false");
+$stmt->execute([$user_id]);
+$unread_count = (int)$stmt->fetchColumn();
 
-$recent_notifications = pg_query_params(
-    $conn,
-    "SELECT notification_id, type, message, is_read, created_at
-     FROM notifications
-     WHERE user_id = $1
-     ORDER BY created_at DESC
-     LIMIT 5",
-    array($user_id)
-);
+$recent_notifications = $pdo->prepare("SELECT notification_id, type, message, is_read, created_at FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 5");
+$recent_notifications->execute([$user_id]);
 
 
 /* =========================================================
@@ -1624,7 +1623,7 @@ if ($twofa_pending_secret !== '') {
 
         </div>
 
-        <form method="POST" class="shrink-0">
+        <form method="POST" class="shrink-0" id="emailNotifForm">
 
             <?= csrf_field(); ?>
 
@@ -1636,12 +1635,14 @@ if ($twofa_pending_secret !== '') {
 
             <button
                 type="submit"
+                id="emailNotifToggleBtn"
                 aria-label="<?= t('toggle_email_notifications'); ?>"
-                class="w-16 h-9 rounded-full relative transition flex items-center px-1 <?= $emailOn ? 'bg-rmc-800' : 'bg-gray-300'; ?>"
+                class="w-16 h-9 rounded-full relative flex items-center px-1 email-notif-toggle <?= $emailOn ? 'bg-rmc-800' : 'bg-gray-300'; ?>"
             >
 
                 <span
-                    class="w-7 h-7 bg-white rounded-full shadow transform transition"
+                    id="emailNotifThumb"
+                    class="w-7 h-7 bg-white rounded-full shadow email-notif-thumb"
                     style="transform: translateX(<?= $emailOn ? '28px' : '0px'; ?>);"
                 ></span>
 
@@ -1657,6 +1658,37 @@ if ($twofa_pending_secret !== '') {
 <!-- =========================================================
      SETTINGS APPEARANCE OPTIONS
      ========================================================= -->
+
+<style>
+
+.email-notif-toggle {
+    transition: background-color .25s ease, box-shadow .25s ease, opacity .2s ease;
+}
+
+.email-notif-toggle:active .email-notif-thumb {
+    width: 1.9rem;
+}
+
+.email-notif-thumb {
+    transition: transform .32s cubic-bezier(.34, 1.56, .64, 1), width .18s ease;
+}
+
+.email-notif-toggle.is-busy {
+    opacity: .65;
+    cursor: wait;
+}
+
+.email-notif-toggle.is-shaking {
+    animation: emailNotifShake .4s ease;
+}
+
+@keyframes emailNotifShake {
+    0%, 100% { transform: translateX(0); }
+    20%, 60% { transform: translateX(-4px); }
+    40%, 80% { transform: translateX(4px); }
+}
+
+</style>
 
 <script>
 
@@ -1780,6 +1812,101 @@ document.addEventListener('click', function (event) {
         closeProfileMenu();
     }
 });
+
+
+/* =========================================================
+   EMAIL NOTIFICATIONS TOGGLE (animated, AJAX)
+   ========================================================= */
+
+(function () {
+
+    const form = document.getElementById('emailNotifForm');
+    const btn = document.getElementById('emailNotifToggleBtn');
+    const thumb = document.getElementById('emailNotifThumb');
+
+    if (!form || !btn || !thumb) return;
+
+    const confirmDisableMsg = <?= json_encode(t('confirm_disable_email_notifications')); ?>;
+
+    function setVisualState(isOn) {
+        btn.classList.toggle('bg-rmc-800', isOn);
+        btn.classList.toggle('bg-gray-300', !isOn);
+        thumb.style.transform = 'translateX(' + (isOn ? '28px' : '0px') + ')';
+    }
+
+    function shake() {
+        btn.classList.add('is-shaking');
+        setTimeout(function () {
+            btn.classList.remove('is-shaking');
+        }, 400);
+    }
+
+    form.addEventListener('submit', function (event) {
+
+        event.preventDefault();
+
+        if (btn.dataset.busy === '1') return;
+
+        const wasOn = btn.classList.contains('bg-rmc-800');
+        const goingOn = !wasOn;
+
+        /* Confirm before turning OFF — no confirmation needed to turn back on. */
+        if (wasOn && !goingOn) {
+            if (!window.confirm(confirmDisableMsg)) {
+                return;
+            }
+        }
+
+        btn.dataset.busy = '1';
+        btn.classList.add('is-busy');
+
+        /* Optimistic UI update -- animate immediately, confirm with the server after. */
+        setVisualState(goingOn);
+
+        const formData = new FormData(form);
+        formData.append('ajax', '1');
+
+        fetch('settings.php', {
+            method: 'POST',
+            headers: { 'X-Requested-With': 'XMLHttpRequest' },
+            body: formData
+        })
+            .then(function (res) { return res.json(); })
+            .then(function (data) {
+
+                btn.dataset.busy = '0';
+                btn.classList.remove('is-busy');
+
+                if (!data.success) {
+
+                    /* Revert the optimistic change and let the user know. */
+                    setVisualState(wasOn);
+                    shake();
+
+                    console.error('Email notification toggle failed:', data);
+
+                    if (data.debug) {
+                        alert(
+                            (data.message || 'Update failed') +
+                            '\n\nDebug info (temporary, remove once fixed):\n' +
+                            JSON.stringify(data.debug, null, 2)
+                        );
+                    }
+                }
+            })
+            .catch(function (err) {
+
+                btn.dataset.busy = '0';
+                btn.classList.remove('is-busy');
+
+                setVisualState(wasOn);
+                shake();
+
+                console.error('Email notification toggle request error:', err);
+            });
+    });
+
+})();
 
 </script>
 

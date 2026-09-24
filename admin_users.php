@@ -1,10 +1,10 @@
 <?php
 
-session_start();
 
 include 'db_connect.php';
 require 'lang.php';
 require 'csrf.php';
+require_once 'notifications_helper.php';
 
 if (
     !isset($_SESSION['user_id']) ||
@@ -46,15 +46,11 @@ if (
 
     } else {
 
-        $current_result = pg_query_params(
-            $conn,
-            "SELECT status
-             FROM users
-             WHERE user_id = $1",
-            array($target_id)
-        );
+        $current_result = $pdo->prepare("SELECT status
+FROM users
+             WHERE user_id = ?"); $current_result->execute(array($target_id));
 
-        $current = pg_fetch_assoc($current_result);
+        $current = $current_result->fetch(PDO::FETCH_ASSOC);
 
         if (!$current) {
 
@@ -73,16 +69,12 @@ if (
                 ? 'deactivated'
                 : 'active';
 
-            $update_result = pg_query_params(
-                $conn,
-                "UPDATE users
-                 SET status = $1
-                 WHERE user_id = $2",
-                array(
+            $update_result = $pdo->prepare("UPDATE users
+                 SET status = ?
+                 WHERE user_id = ?"); $update_result->execute(array(
                     $new_status,
                     $target_id
-                )
-            );
+                ));
 
             if ($update_result) {
 
@@ -91,29 +83,95 @@ if (
                     ? t('user_activated_msg')
                     : t('user_deactivated_msg');
 
-                // Notify the affected user
+                // Notify the affected user (website + email, forced regardless of their email-notif toggle
+                // since account activation/deactivation is a security-relevant action)
                 $notif_msg = $new_status === 'active'
                     ? 'Your account has been activated by an administrator.'
                     : 'Your account has been deactivated by an administrator.';
 
-                pg_query_params(
-                    $conn,
-                    "INSERT INTO notifications (user_id, message, type) VALUES ($1, $2, 'admin_action')",
-                    array($target_id, $notif_msg)
-                );
+                $notif_subject = $new_status === 'active'
+                    ? 'Regis Marie College - Your Account Has Been Activated'
+                    : 'Regis Marie College - Your Account Has Been Deactivated';
+
+                notify_user($pdo, $target_id, $notif_msg, 'admin_action', $notif_subject, null, true);
 
                 // Audit log
-                pg_query_params(
-                    $conn,
-                    "INSERT INTO audit_log (admin_user_id, action, target_user_id, details) VALUES ($1, $2, $3, $4)",
-                    array($admin_id, 'toggle_status_' . $new_status, $target_id, 'Status changed to ' . $new_status)
-                );
+                $pdo->prepare("INSERT INTO audit_log (admin_user_id, target_user_id, target_event_id, action, details) VALUES (?, ?, NULL, ?, ?)")
+                    ->execute(array($admin_id, $target_id, 'toggle_status_' . $new_status, 'Status changed to ' . $new_status));
 
             } else {
 
                 $error = t('user_status_update_error');
             }
 
+            }
+        }
+    }
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| Toggle Per-User Email Notifications
+|--------------------------------------------------------------------------
+| When OFF, notify_user()/notify_role()/notify_all_users() in
+| notifications_helper.php will skip sending Gmail for this user; the
+| website notification (notifications table) is always still created.
+*/
+
+if (
+    $_SERVER["REQUEST_METHOD"] === "POST" &&
+    isset($_POST['toggle_email_notif'])
+) {
+
+    csrf_verify();
+
+    $target_id = (int) $_POST['toggle_email_notif'];
+
+    if ($target_id <= 0) {
+
+        $error = t('invalid_user_id_msg');
+
+    } else {
+
+        $current_result = $pdo->prepare("SELECT email_notifications FROM users WHERE user_id = ?");
+        $current_result->execute(array($target_id));
+
+        $current = $current_result->fetch(PDO::FETCH_ASSOC);
+
+        if (!$current) {
+
+            $error = t('user_account_not_found');
+
+        } else {
+
+            $is_on = in_array($current['email_notifications'], ['t', '1', 1, true], true);
+            $new_value = $is_on ? '0' : '1';
+
+            $update_result = $pdo->prepare("UPDATE users SET email_notifications = ? WHERE user_id = ?");
+            $update_result->execute(array($new_value, $target_id));
+
+            if ($update_result) {
+
+                $success = $new_value === '1'
+                    ? (t('email_notif_enabled_msg') ?: 'Email notifications enabled for this user.')
+                    : (t('email_notif_disabled_msg') ?: 'Email notifications disabled for this user. They will only see notifications on the website.');
+
+                // Website-only notice so the user knows what changed (this itself always shows on the website)
+                $notif_msg = $new_value === '1'
+                    ? 'An administrator has turned ON email notifications for your account.'
+                    : 'An administrator has turned OFF email notifications for your account. You will still receive notifications here on the website.';
+
+                $pdo->prepare("INSERT INTO notifications (user_id, message, type) VALUES (?, ?, 'admin_action')")
+                    ->execute(array($target_id, $notif_msg));
+
+                // Audit log
+                $pdo->prepare("INSERT INTO audit_log (admin_user_id, target_user_id, target_event_id, action, details) VALUES (?, ?, NULL, ?, ?)")
+                    ->execute(array($admin_id, $target_id, 'toggle_email_notif_' . $new_value, 'Email notifications set to ' . $new_value));
+
+            } else {
+
+                $error = t('user_status_update_error');
             }
         }
     }
@@ -153,22 +211,14 @@ if (
         foreach ($user_ids as $uid) {
 
             if ($action === 'bulk_deactivate') {
-                $r = pg_query_params(
-                    $conn,
-                    "UPDATE users SET status = 'deactivated' WHERE user_id = $1 AND status = 'active'",
-                    [$uid]
-                );
+                $r = $pdo->prepare("UPDATE users SET status = 'deactivated', session_token = NULL WHERE user_id = ? AND status = 'active'"); $r->execute([$uid]);
             } elseif ($action === 'bulk_activate') {
-                $r = pg_query_params(
-                    $conn,
-                    "UPDATE users SET status = 'active' WHERE user_id = $1 AND status = 'deactivated'",
-                    [$uid]
-                );
+                $r = $pdo->prepare("UPDATE users SET status = 'active' WHERE user_id = ? AND status = 'deactivated'"); $r->execute([$uid]);
             } else {
                 continue;
             }
 
-            if ($r && pg_affected_rows($r) > 0) {
+            if ($r && $r->rowCount() > 0) {
                 $processed++;
             } else {
                 $skipped++;
@@ -209,29 +259,50 @@ if (
 
     } else {
 
-        pg_query_params(
-            $conn,
-            "UPDATE users SET failed_attempts = 0, locked_until = NULL WHERE user_id = $1",
-            [$unlock_id]
-        );
+        $pdo->prepare("UPDATE users SET failed_attempts = 0, locked_until = NULL WHERE user_id = ?")
+            ->execute([$unlock_id]);
 
-        // Notify the affected user
-        pg_query_params(
-            $conn,
-            "INSERT INTO notifications (user_id, message, type) VALUES ($1, 'Your account has been unlocked by an administrator.', 'admin_action')",
-            array($unlock_id)
+        // Also clear the IP-based rate limit for non-admin logins.
+        // This is a SEPARATE lockout layer (keyed by client IP, not by
+        // user account) that the account-level reset above does NOT
+        // touch. Without this, an admin unlock could reset the account
+        // but the browser/IP that tried to log in would still be
+        // throttled by "Too many failed attempts..." until its own
+        // 15-minute window expires on its own.
+        $pdo->query("DELETE FROM rate_limits WHERE rate_key LIKE 'login_fail:%'");
+
+        // Notify the affected user (website + email, forced since this is a security-relevant action)
+        notify_user(
+            $pdo,
+            $unlock_id,
+            'Your account has been unlocked by an administrator.',
+            'admin_action',
+            'Regis Marie College - Your Account Has Been Unlocked',
+            null,
+            true
         );
 
         // Audit log
-        pg_query_params(
-            $conn,
-            "INSERT INTO audit_log (admin_user_id, action, target_user_id, details) VALUES ($1, 'unlock', $2, 'Account unlocked')",
-            array($admin_id, $unlock_id)
-        );
+        $pdo->prepare("INSERT INTO audit_log (admin_user_id, target_user_id, target_event_id, action, details) VALUES (?, ?, NULL, 'unlock', 'Account unlocked')")
+            ->execute(array($admin_id, $unlock_id));
 
         $success = t('user_unlocked') ?: 'Account has been unlocked.';
     }
 }
+
+
+/*
+|--------------------------------------------------------------------------
+| Clean Up Naturally-Expired Lockouts
+|--------------------------------------------------------------------------
+| A lockout is time-based (15 minutes). Once that window passes on its
+| own, failed_attempts was otherwise left sitting at its old value (e.g.
+| "6/5 attempts") even though the account isn't actually locked anymore.
+| This resets both fields for any account whose lock has already expired,
+| so this page always reflects the true, current state.
+*/
+
+$pdo->query("UPDATE users SET failed_attempts = 0, locked_until = NULL WHERE locked_until IS NOT NULL AND locked_until <= NOW()");
 
 
 /*
@@ -253,34 +324,26 @@ $search = isset($_GET['search'])
 
 if (!empty($search)) {
 
-    $users = pg_query_params(
-        $conn,
+$users = $pdo->prepare("SELECT *, CASE WHEN locked_until IS NOT NULL AND locked_until > NOW()
+                 THEN TIMESTAMPDIFF(SECOND, NOW(), locked_until)
+                 ELSE 0 END AS lockout_secs FROM users
+WHERE full_name LIKE ?
+              OR student_id LIKE ?
+              OR department LIKE ?
+              OR role LIKE ?
+          ORDER BY role, full_name");
 
-        "SELECT *,
-                CASE WHEN locked_until IS NOT NULL AND locked_until > NOW()
-                     THEN EXTRACT(EPOCH FROM (locked_until - NOW()))::int
-                     ELSE 0 END AS lockout_secs
-         FROM users
-         WHERE full_name ILIKE $1
-            OR student_id ILIKE $1
-            OR department ILIKE $1
-            OR role ILIKE $1
-         ORDER BY role, full_name",
-
-        array('%' . $search . '%')
-    );
+$search_term = '%' . $search . '%';
+$users->execute(array($search_term, $search_term, $search_term, $search_term));
 
 } else {
 
-    $users = pg_query(
-        $conn,
-        "SELECT *,
+$users = $pdo->query("SELECT *,
                 CASE WHEN locked_until IS NOT NULL AND locked_until > NOW()
-                     THEN EXTRACT(EPOCH FROM (locked_until - NOW()))::int
+                     THEN TIMESTAMPDIFF(SECOND, NOW(), locked_until)
                      ELSE 0 END AS lockout_secs
-         FROM users
-         ORDER BY role, full_name"
-    );
+          FROM users
+          ORDER BY role, full_name");
 }
 
 
@@ -315,28 +378,12 @@ function role_badge($role)
 $full_name = $_SESSION['full_name'] ?? '';
 $first_name = explode(' ', trim($full_name))[0];
 
-$unread_count = (int) pg_fetch_result(
-    pg_query_params(
-        $conn,
-        "SELECT COUNT(*)
-         FROM notifications
-         WHERE user_id = $1
-           AND is_read = false",
-        array($admin_id)
-    ),
-    0,
-    0
-);
+$unread_stmt = $pdo->prepare("SELECT COUNT(*) FROM notifications WHERE user_id = ? AND is_read = 0");
+$unread_stmt->execute([$admin_id]);
+$unread_count = (int) $unread_stmt->fetchColumn();
 
-$recent_notifications = pg_query_params(
-    $conn,
-    "SELECT notification_id, type, message, is_read, created_at
-     FROM notifications
-     WHERE user_id = $1
-     ORDER BY created_at DESC
-     LIMIT 5",
-    array($admin_id)
-);
+$recent_notifications = $pdo->prepare("SELECT notification_id, type, message, is_read, created_at FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 5");
+$recent_notifications->execute([$admin_id]);
 
 $role_label  = 'Administrator';
 $page_title  = t('title_manage_users');
@@ -457,8 +504,8 @@ $active_page = 'admin_users';
 
             <?php if (!empty($search)): ?>
 
-                <a
-                    href="admin_users.php"
+                    <a
+                        href="admin_users.php"
                     class="border border-slate-200 px-4 py-2 rounded-xl text-sm text-slate-600 hover:bg-rmc-50 transition"
                 >
 
@@ -558,6 +605,10 @@ $active_page = 'admin_users';
                     </th>
 
                     <th class="px-6 py-4 text-center text-xs uppercase tracking-wide">
+                        Email Notif
+                    </th>
+
+                    <th class="px-6 py-4 text-center text-xs uppercase tracking-wide">
                         <?= t('lockout'); ?>
                     </th>
 
@@ -571,11 +622,11 @@ $active_page = 'admin_users';
 
             <tbody>
 
-                <?php if (pg_num_rows($users) === 0): ?>
+                <?php if ($users->rowCount() === 0): ?>
 
                     <tr>
 
-                        <td colspan="9" class="px-6 py-16 text-center">
+                        <td colspan="10" class="px-6 py-16 text-center">
 
                             <div class="flex flex-col items-center">
 
@@ -601,7 +652,7 @@ $active_page = 'admin_users';
                 <?php endif; ?>
 
 
-                <?php while ($row = pg_fetch_assoc($users)): ?>
+                <?php while ($row = $users->fetch(PDO::FETCH_ASSOC)): ?>
 
                     <tr class="border-b border-slate-100 hover:bg-rmc-50/40 transition">
 
@@ -672,6 +723,31 @@ $active_page = 'admin_users';
                         <td class="text-center">
 
                             <?php
+                            $email_notif_on = in_array($row['email_notifications'] ?? '0', ['t', '1', 1, true], true);
+                            ?>
+
+                            <form method="POST" class="inline-flex items-center gap-2" data-action-form="<?= (int) $row['user_id']; ?>-email-notif">
+
+                                <?= csrf_field(); ?>
+
+                                <input type="hidden" name="toggle_email_notif" value="<?= (int) $row['user_id']; ?>">
+
+                                <button
+                                    type="submit"
+                                    class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold transition <?= $email_notif_on ? 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200' : 'bg-slate-200 text-slate-600 hover:bg-slate-300'; ?>"
+                                    title="<?= $email_notif_on ? 'Click to turn OFF Gmail notifications for this user' : 'Click to turn ON Gmail notifications for this user'; ?>"
+                                >
+                                    <i class="fa-solid <?= $email_notif_on ? 'fa-envelope-circle-check' : 'fa-envelope-slash'; ?>"></i>
+                                    <?= $email_notif_on ? 'On' : 'Off'; ?>
+                                </button>
+
+                            </form>
+
+                        </td>
+
+                        <td class="text-center">
+
+                            <?php
                             $is_locked = (($row['lockout_secs'] ?? 0) > 0);
                             $remaining = $is_locked ? (int) ceil(((int) $row['lockout_secs']) / 60) : 0;
                             ?>
@@ -704,8 +780,8 @@ $active_page = 'admin_users';
 
                                 <!-- Edit -->
 
-                                <a
-                                    href="edit_user.php?id=<?= (int) $row['user_id']; ?>"
+                                    <a
+                                        href="edit_user.php?id=<?= (int) $row['user_id']; ?>"
                                     class="bg-rmc-800 hover:bg-rmc-900 text-white px-4 py-2 rounded-xl text-sm transition"
                                     title="<?= t('edit_user_title'); ?>"
                                 >
@@ -786,7 +862,7 @@ $active_page = 'admin_users';
                                             type="button"
                                             class="bg-amber-500 hover:bg-amber-600 text-white px-3 py-2 rounded-xl text-sm transition"
                                             title="Unlock account"
-                                            onclick="openConfirmModal({form: this.closest('form'), title: <?= json_encode(t('unlock_account') ?: 'Unlock Account') ?>, message: <?= json_encode(t('unlock_account_confirm') ?: 'This will reset the failed login counter and unlock this account.') ?>, itemName: <?= json_encode(htmlspecialchars($row['full_name'], ENT_QUOTES)) ?>, itemLabel: <?= json_encode(t('user')) ?>, actionText: <?= json_encode(t('unlock_account') ?: 'Unlock Account') ?>, color: 'amber', icon: 'fa-solid fa-lock-open'});"
+                                            onclick="openConfirmModal({form: this.closest('form'), title: <?= htmlspecialchars(json_encode(t('unlock_account') ?: 'Unlock Account'), ENT_QUOTES) ?>, message: <?= htmlspecialchars(json_encode(t('unlock_account_confirm') ?: 'This will reset the failed login counter and unlock this account.'), ENT_QUOTES) ?>, itemName: <?= htmlspecialchars(json_encode(htmlspecialchars($row['full_name'], ENT_QUOTES)), ENT_QUOTES) ?>, itemLabel: <?= htmlspecialchars(json_encode(t('user')), ENT_QUOTES) ?>, actionText: <?= htmlspecialchars(json_encode(t('unlock_account') ?: 'Unlock Account'), ENT_QUOTES) ?>, color: 'amber', icon: 'fa-solid fa-lock-open'});"
                                         >
 
                                             <i class="fa-solid fa-lock-open"></i>

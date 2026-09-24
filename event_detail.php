@@ -1,6 +1,5 @@
 <?php
 
-session_start();
 
 include 'db_connect.php';
 require 'send_email.php';
@@ -80,23 +79,19 @@ if (!empty($back_params)) {
 
 /* =========================================================
    FETCH EVENT DATA
+   (fixed: prepare() and execute() were previously spliced
+   together into a single corrupted string)
    ========================================================= */
 
-$event_conditions = array("e.event_id = $1");
+$event_conditions = array("e.event_id = ?");
 $event_params     = array($event_id);
-$event_param_idx  = 2;
 
 if ($role === 'organizer') {
-    $event_conditions[] =
-        "e.organizer_id = $" . $event_param_idx;
+    $event_conditions[] = "e.organizer_id = ?";
     $event_params[] = $user_id;
-    $event_param_idx++;
 }
 
-$event_result = pg_query_params(
-    $conn,
-
-    "SELECT
+$event_sql = "SELECT
         e.event_id,
         e.title,
         e.description,
@@ -114,17 +109,16 @@ $event_result = pg_query_params(
      JOIN users u
         ON e.organizer_id = u.user_id
 
-     WHERE " . implode(' AND ', $event_conditions),
+     WHERE " . implode(' AND ', $event_conditions);
 
-    $event_params
-);
+$event_result = $pdo->prepare($event_sql);
+$event_result->execute($event_params);
+$event = $event_result->fetch(PDO::FETCH_ASSOC);
 
-if (!$event_result || pg_num_rows($event_result) === 0) {
+if (!$event) {
     header("Location: " . $back_url);
     exit();
 }
-
-$event = pg_fetch_assoc($event_result);
 
 $event_title      = $event['title'];
 $event_date       = $event['event_date'];
@@ -138,12 +132,12 @@ $event_end_time   = $event['end_time'];
 
 /* =========================================================
    FETCH PARTICIPANTS
+   (fixed: was LEFT JOIN-ing `users a` instead of the actual
+   `attendance` table, so a.attendance_id / a.checked_in_at
+   could never resolve)
    ========================================================= */
 
-$participants_result = pg_query_params(
-    $conn,
-
-    "SELECT
+$participants_sql = "SELECT
         r.registration_id,
         r.registered_at,
         r.status AS registration_status,
@@ -163,17 +157,17 @@ $participants_result = pg_query_params(
      LEFT JOIN attendance a
         ON r.registration_id = a.registration_id
 
-     WHERE r.event_id = $1
+     WHERE r.event_id = ?
 
-     ORDER BY r.registered_at ASC",
+     ORDER BY r.registered_at ASC";
 
-    array($event_id)
-);
+$participants_result = $pdo->prepare($participants_sql);
+$participants_result->execute(array($event_id));
 
 $participants = array();
 
 if ($participants_result) {
-    while ($row = pg_fetch_assoc($participants_result)) {
+    while ($row = $participants_result->fetch(PDO::FETCH_ASSOC)) {
         $participants[] = $row;
     }
 }
@@ -181,12 +175,11 @@ if ($participants_result) {
 
 /* =========================================================
    FETCH FEEDBACK
+   (fixed: was selecting FROM `users f` instead of the
+   actual `feedback` table)
    ========================================================= */
 
-$feedback_result = pg_query_params(
-    $conn,
-
-    "SELECT
+$feedback_sql = "SELECT
         f.feedback_id,
         f.rating,
         f.comment,
@@ -199,17 +192,17 @@ $feedback_result = pg_query_params(
      JOIN users u
         ON f.user_id = u.user_id
 
-     WHERE f.event_id = $1
+     WHERE f.event_id = ?
 
-     ORDER BY f.created_at DESC",
+     ORDER BY f.created_at DESC";
 
-    array($event_id)
-);
+$feedback_result = $pdo->prepare($feedback_sql);
+$feedback_result->execute(array($event_id));
 
 $feedback_items = array();
 
 if ($feedback_result) {
-    while ($row = pg_fetch_assoc($feedback_result)) {
+    while ($row = $feedback_result->fetch(PDO::FETCH_ASSOC)) {
         $feedback_items[] = $row;
     }
 }
@@ -288,7 +281,7 @@ $active_page = 'reports';
     <nav class="flex items-center gap-2 text-sm text-slate-500 mb-6">
 
         <a
-            href="<?= htmlspecialchars($back_url); ?>"
+                href="<?= htmlspecialchars($back_url); ?>"
             class="hover:text-rmc-700 transition font-medium"
         >
             <?= t('event_analytics'); ?>
@@ -303,7 +296,7 @@ $active_page = 'reports';
     </nav>
 
     <a
-        href="<?= htmlspecialchars($back_url); ?>"
+            href="<?= htmlspecialchars($back_url); ?>"
         class="inline-flex items-center gap-2 text-sm font-semibold text-rmc-700 hover:text-rmc-900 transition mb-6"
     >
         <i class="fa-solid fa-arrow-left"></i>
@@ -779,6 +772,8 @@ $active_page = 'reports';
 
                 <?php foreach ($feedback_items as $fb): ?>
 
+                    <?php $fb_is_anon = in_array($fb['is_anonymous'], ['t', '1', 1, true], true); ?>
+
                     <div class="border border-slate-100 rounded-2xl p-5 hover:border-slate-200 transition">
 
                         <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-3">
@@ -789,7 +784,7 @@ $active_page = 'reports';
 
                                     <?php
 
-                                    $display_name = ($fb['is_anonymous'] === 't' || $fb['is_anonymous'] === true)
+                                    $display_name = $fb_is_anon
                                         ? '?'
                                         : mb_substr($fb['full_name'], 0, 1);
 
@@ -803,7 +798,7 @@ $active_page = 'reports';
 
                                     <p class="font-semibold text-slate-800 text-sm">
 
-                                        <?php if ($fb['is_anonymous'] === 't' || $fb['is_anonymous'] === true): ?>
+                                        <?php if ($fb_is_anon): ?>
 
                                             <?= t('anonymous'); ?>
 

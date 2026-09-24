@@ -1,4 +1,7 @@
 <?php
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
 
 require 'PHPMailer/Exception.php';
 require 'PHPMailer/PHPMailer.php';
@@ -9,14 +12,8 @@ require_once 'email_templates.php';
 use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\Exception;
 
-
 /* =========================================================
-   LOAD SMTP CONFIGURATION  (never hardcoded in source)
-   =========================================================
-   Looks for the SMTP settings in this order:
-     1. $RMC_SMTP_CONFIG environment variable -> file path
-     2. C:\xampp\email_config.php (outside the web root)
-   If none is found, sends fail gracefully and are logged.
+   LOAD SMTP CONFIGURATION
    ========================================================= */
 
 function rmc_smtp_config()
@@ -34,21 +31,18 @@ function rmc_smtp_config()
     $paths = [];
 
     $env_path = getenv('RMC_SMTP_CONFIG');
-
     if (is_string($env_path) && $env_path !== '') {
         $paths[] = $env_path;
     }
 
+    $paths[] = __DIR__ . '/email_config.local.php';
     $paths[] = '/etc/rmc/email_config.php';
     $paths[] = dirname(__DIR__) . '/rmc_email_config.php';
     $paths[] = 'C:/xampp/email_config.php';
 
     foreach ($paths as $path) {
-
         if (is_file($path)) {
-
             $config = @include $path;
-
             if (is_array($config)) {
                 return array_merge($defaults, $config);
             }
@@ -58,218 +52,94 @@ function rmc_smtp_config()
     return $defaults;
 }
 
-
 /* =========================================================
-   SEND NOTIFICATION EMAIL
+   SEND NOTIFICATION EMAIL (immediate send)
    ========================================================= */
 
-function send_notification_email(
-    $to_email,
-    $subject,
-    $message_body
-) {
-
-    global $conn;
+function send_notification_email($to_email, $subject, $message_body)
+{
+    global $pdo;
 
     $mail = new PHPMailer(true);
 
-
     try {
-
-
-        /* =================================================
-           SMTP SETTINGS  (loaded from out-of-root config)
-           ================================================= */
-
         $smtp = rmc_smtp_config();
 
         $mail->isSMTP();
-
-        $mail->Host = $smtp['host'];
-
-        $mail->SMTPAuth = true;
-
-        $mail->Username = $smtp['username'];
-
-        $mail->Password = $smtp['password'];
-
-        $mail->SMTPSecure =
-            $smtp['encryption'] === 'ssl'
-                ? PHPMailer::ENCRYPTION_SMTPS
-                : PHPMailer::ENCRYPTION_STARTTLS;
-
+        $mail->Host       = $smtp['host'];
+        $mail->SMTPAuth   = true;
+        $mail->Username   = $smtp['username'];
+        $mail->Password   = $smtp['password'];
+        $mail->SMTPSecure = $smtp['encryption'] === 'ssl'
+            ? PHPMailer::ENCRYPTION_SMTPS
+            : PHPMailer::ENCRYPTION_STARTTLS;
         $mail->Port = (int) $smtp['port'];
 
-
-        /* =================================================
-           EMAIL DETAILS
-           ================================================= */
-
-        $mail->setFrom(
-            $smtp['from_email'],
-            $smtp['from_name']
-        );
-
+        $mail->setFrom($smtp['from_email'], $smtp['from_name']);
         $mail->addAddress($to_email);
-
         $mail->isHTML(true);
-
         $mail->CharSet = 'UTF-8';
-
         $mail->Subject = $subject;
-
-        /*
-         * Wrap any un-branded message in the RMC maroon header/footer.
-         * Messages produced by the email_templates.php builders already
-         * contain the <!-- RMC_BRANDED --> marker and are left as-is.
-         */
 
         if (strpos($message_body, RMC_BRANDED_MARKER) === false) {
             $message_body = rmc_email_wrapper($message_body);
         }
 
-        $mail->Body = $message_body;
-
-        /*
-         * Plain-text fallback.
-         */
-
+        $mail->Body    = $message_body;
         $mail->AltBody = strip_tags($message_body);
-
-
-        /* =================================================
-           SEND
-           ================================================= */
 
         $mail->send();
 
-
-        /* =================================================
-           SUCCESS LOG
-           ================================================= */
-
-        pg_query_params(
-            $conn,
-
-            "INSERT INTO email_logs
-            (
-                recipient_email,
-                subject,
-                message,
-                status,
-                created_at
-            )
-            VALUES
-            (
-                $1,
-                $2,
-                $3,
-                'Sent',
-                NOW()
-            )",
-
-            array(
-                $to_email,
-                $subject,
-                $message_body
-            )
-        );
-
+        if ($pdo) {
+            $stmt = $pdo->prepare(
+                "INSERT INTO email_logs (recipient_email, subject, message, status, created_at)
+                 VALUES (?, ?, ?, 'Sent', NOW())"
+            );
+            $stmt->execute([$to_email, $subject, $message_body]);
+        }
 
         return true;
 
-
     } catch (Exception $e) {
 
+        if ($pdo) {
+            $stmt = $pdo->prepare(
+                "INSERT INTO email_logs (recipient_email, subject, message, status, created_at)
+                 VALUES (?, ?, ?, 'Failed', NOW())"
+            );
+            $stmt->execute([$to_email, $subject, $message_body]);
+        }
 
-        /* =================================================
-           FAILED EMAIL LOG
-           ================================================= */
-
-        pg_query_params(
-            $conn,
-
-            "INSERT INTO email_logs
-            (
-                recipient_email,
-                subject,
-                message,
-                status,
-                created_at
-            )
-            VALUES
-            (
-                $1,
-                $2,
-                $3,
-                'Failed',
-                NOW()
-            )",
-
-            array(
-                $to_email,
-                $subject,
-                $message_body
-            )
-        );
-
-
-        error_log(
-            "Email failed to {$to_email}: " .
-            $mail->ErrorInfo
-        );
-
+        error_log("Email failed to {$to_email}: " . $mail->ErrorInfo);
 
         return false;
-
     }
-
 }
 
-
 /* =========================================================
-   DEFERRED EMAIL QUEUE  (database-backed with retry)
-   =========================================================
-   Emails are inserted into the email_queue table for reliable
-   delivery with automatic retry. A worker script
-   (email_worker.php) processes the queue.
+   DEFERRED EMAIL QUEUE
    ========================================================= */
 
 function send_email_deferred($to_email, $subject, $message_body)
 {
-    global $conn;
+    global $pdo;
 
-    if (!$conn) {
+    if (!$pdo) {
         error_log('send_email_deferred: no DB connection, falling back to immediate send');
         return send_notification_email($to_email, $subject, $message_body);
     }
 
-    $result = @pg_query_params(
-        $conn,
-
-        "INSERT INTO email_queue
-        (
-            recipient_email,
-            subject,
-            message_body,
-            status,
-            attempts,
-            scheduled_at,
-            created_at
-        )
-        VALUES
-        (
-            $1,
-            $2,
-            $3,
-            'pending',
-            0,
-            NOW(),
-            NOW()
-        )",
-
-        array($to_email, $subject, $message_body)
-    );
+    try {
+        $stmt = $pdo->prepare(
+            "INSERT INTO email_queue
+                (recipient_email, subject, message_body, status, attempts, scheduled_at, created_at)
+             VALUES (?, ?, ?, 'pending', 0, NOW(), NOW())"
+        );
+        $result = $stmt->execute([$to_email, $subject, $message_body]);
+    } catch (\PDOException $e) {
+        error_log('send_email_deferred: queue insert failed - ' . $e->getMessage());
+        $result = false;
+    }
 
     if (!$result) {
         error_log('send_email_deferred: queue insert failed, falling back');
@@ -279,68 +149,65 @@ function send_email_deferred($to_email, $subject, $message_body)
     return true;
 }
 
+/* =========================================================
+   PROCESS QUEUE (run by email_worker.php / cron)
+   MySQL-compatible version (no RETURNING clause)
+   ========================================================= */
 
-function rmc_process_email_queue($limit = 10)
+function rmc_process_email_queue($limit = 10, $queue_id = null)
 {
-    global $conn;
+    global $pdo;
 
-    if (!$conn) {
+    if (!$pdo) {
         return 0;
     }
 
-    $result = @pg_query_params(
-        $conn,
+    $limit = (int) $limit;
 
-        "UPDATE email_queue
-        SET status = 'processing'
-        WHERE queue_id IN (
-            SELECT queue_id
-            FROM email_queue
-            WHERE status = 'pending'
-              AND attempts < max_attempts
-              AND scheduled_at <= NOW()
-            ORDER BY scheduled_at ASC
-            LIMIT $1
-            FOR UPDATE SKIP LOCKED
-        )
-        RETURNING queue_id, recipient_email, subject, message_body",
+    $where = "status = 'pending' AND attempts < max_attempts AND scheduled_at <= NOW()";
+    $params = [];
 
-        array($limit)
+    if ($queue_id !== null) {
+        $where .= " AND queue_id = ?";
+        $params[] = (int) $queue_id;
+    }
+
+    $stmt = $pdo->prepare(
+        "SELECT queue_id, recipient_email, subject, message_body
+         FROM email_queue
+         WHERE $where
+         ORDER BY scheduled_at ASC
+         LIMIT $limit"
     );
+    $stmt->execute($params);
+    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-    if (!$result || pg_num_rows($result) === 0) {
+    if (!$rows) {
         return 0;
     }
 
     $processed = 0;
 
-    while ($row = pg_fetch_assoc($result)) {
-        $qid      = (int) $row['queue_id'];
-        $email    = $row['recipient_email'];
-        $subj     = $row['subject'];
-        $body     = $row['message_body'];
+    foreach ($rows as $row) {
+        $qid = (int) $row['queue_id'];
 
-        $ok = @send_notification_email($email, $subj, $body);
+        $pdo->prepare("UPDATE email_queue SET status = 'processing' WHERE queue_id = ?")
+            ->execute([$qid]);
+
+        $ok = send_notification_email($row['recipient_email'], $row['subject'], $row['message_body']);
 
         if ($ok) {
-            @pg_query_params(
-                $conn,
-                "UPDATE email_queue
-                SET status = 'sent', sent_at = NOW()
-                WHERE queue_id = $1",
-                array($qid)
-            );
+            $pdo->prepare("UPDATE email_queue SET status = 'sent', sent_at = NOW() WHERE queue_id = ?")
+                ->execute([$qid]);
         } else {
-            @pg_query_params(
-                $conn,
+            $pdo->prepare(
                 "UPDATE email_queue
-                SET status = 'pending',
-                    attempts = attempts + 1,
-                    last_error = 'Send failed',
-                    scheduled_at = NOW() + (INTERVAL '5 minutes' * (attempts + 1))
-                WHERE queue_id = $1",
-                array($qid)
-            );
+                 SET status = 'pending',
+                     attempts = attempts + 1,
+                     last_error = 'Send failed',
+                     scheduled_at = DATE_ADD(NOW(), INTERVAL 5 * (attempts + 1) MINUTE)
+                 WHERE queue_id = ?"
+            )->execute([$qid]);
         }
 
         $processed++;
@@ -348,5 +215,3 @@ function rmc_process_email_queue($limit = 10)
 
     return $processed;
 }
-
-?>

@@ -1,6 +1,5 @@
 <?php
 
-session_start();
 
 require 'db_connect.php';
 require 'send_email.php';
@@ -65,9 +64,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         |--------------------------------------------------------------------------
         */
 
-        $event_query = pg_query_params(
-            $conn,
-            "SELECT
+        $event_query = $pdo->prepare("SELECT
                 event_id,
                 title,
                 event_date,
@@ -77,12 +74,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 registration_limit,
                 status
              FROM events
-             WHERE event_id = $1
-             LIMIT 1",
-            array($event_id)
-        );
+             WHERE event_id = ?
+             LIMIT 1");
 
-        $event = pg_fetch_assoc($event_query);
+        $event_query->execute(array($event_id));
+
+        $event = $event_query->fetch(PDO::FETCH_ASSOC);
 
         if (!$event) {
 
@@ -150,17 +147,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 |--------------------------------------------------------------------------
                 */
 
-                $check = pg_query_params(
-                    $conn,
-                    "SELECT registration_id
+                $check = $pdo->prepare("SELECT registration_id
                      FROM registrations
-                     WHERE event_id = $1
-                       AND user_id = $2
-                     LIMIT 1",
-                    array($event_id, $student_id)
-                );
+                     WHERE event_id = ?
+                       AND user_id = ?
+                       AND status = 'registered'
+                     LIMIT 1");
+                $check->execute(array($event_id, $student_id));
 
-                if (pg_num_rows($check) > 0) {
+                if ($check->rowCount() > 0) {
 
                     $message = "You are already registered for this event.";
                     $message_type = 'error';
@@ -173,20 +168,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     |--------------------------------------------------------------------------
                     */
 
-                    $count_query = pg_query_params(
-                        $conn,
-                        "SELECT COUNT(*)
+                    $count_query = $pdo->prepare("SELECT COUNT(*)
                          FROM registrations
-                         WHERE event_id = $1
-                         AND status = 'registered'",
-                        array($event_id)
-                    );
+                         WHERE event_id = ?
+                         AND status = 'registered'");
+                    $count_query->execute(array($event_id));
 
-                    $current_count = (int) pg_fetch_result(
-                        $count_query,
-                        0,
-                        0
-                    );
+                    $current_count = (int)(($count_query->fetch(PDO::FETCH_NUM) ?: [0])[0]);
 
                     $registration_limit =
                         (int) $event['registration_limit'];
@@ -217,9 +205,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         |--------------------------------------------------------------------------
                         */
 
-                        $insert = pg_query_params(
-                            $conn,
-                            "INSERT INTO registrations
+                        $insert = $pdo->prepare("INSERT INTO registrations
                             (
                                 event_id,
                                 user_id,
@@ -228,11 +214,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             )
                             VALUES
                             (
-                                $1,
-                                $2,
-                                $3,
+                                ?,
+                                ?,
+                                ?,
                                 'registered'
-                            )",
+                            )");
+
+                        $insert_ok = $insert->execute(
                             array(
                                 $event_id,
                                 $student_id,
@@ -240,7 +228,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             )
                         );
 
-                        if (!$insert) {
+                        if (!$insert_ok) {
 
                             $message =
                                 "Unable to complete your registration. Please try again.";
@@ -260,9 +248,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 $event['title'] .
                                 "\".";
 
-                            pg_query_params(
-                                $conn,
-                                "INSERT INTO notifications
+                            $notify = $pdo->prepare("INSERT INTO notifications
                                 (
                                     user_id,
                                     message,
@@ -270,10 +256,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 )
                                 VALUES
                                 (
-                                    $1,
-                                    $2,
+                                    ?,
+                                    ?,
                                     'registration'
-                                )",
+                                )");
+
+                            $notify->execute(
                                 array(
                                     $student_id,
                                     $notification_message
@@ -286,20 +274,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             |--------------------------------------------------------------------------
                             */
 
-                            $user_info_query = pg_query_params(
-                                $conn,
-                                "SELECT
+                            $user_info_query = $pdo->prepare("SELECT
                                     email,
                                     full_name,
                                     email_notifications
                                  FROM users
-                                 WHERE user_id = $1
-                                 LIMIT 1",
-                                array($student_id)
-                            );
+                                 WHERE user_id = ?
+                                 LIMIT 1");
+
+                            $user_info_query->execute(array($student_id));
 
                             $user_info =
-                                pg_fetch_assoc($user_info_query);
+                                $user_info_query->fetch(PDO::FETCH_ASSOC);
 
                             /*
                             |--------------------------------------------------------------------------
@@ -323,7 +309,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 $wants_email
                             ) {
 
-                                send_email_deferred(
+                                send_notification_email(
                                     $user_info['email'],
                                     'Event Registration Confirmed',
                                     "
@@ -478,31 +464,26 @@ $end_date =
 |--------------------------------------------------------------------------
 */
 
-$result = pg_query_params(
-    $conn,
-    "SELECT
+$result = $pdo->prepare("SELECT
         event_id,
-        title,
         event_date,
         start_time,
         end_time,
         venue,
-        registration_limit
+        registration_limit,
+        title
      FROM events
      WHERE status = 'approved'
-       AND event_date BETWEEN $1 AND $2
-     ORDER BY event_date ASC, start_time ASC, title ASC",
-    [
-        $start_date,
-        $end_date
-    ]
-);
+       AND event_date BETWEEN ? AND ?
+     ORDER BY event_date ASC, start_time ASC, title ASC");
+
+$result->execute([$start_date, $end_date]);
 
 if (!$result) {
 
     error_log(
         "Calendar query failed: " .
-        pg_last_error($conn)
+        ($pdo->errorInfo()[2] ?? '')
     );
 
     die("Unable to load the event calendar.");
@@ -516,7 +497,7 @@ $events_by_day = [];
 |--------------------------------------------------------------------------
 */
 
-while ($row = pg_fetch_assoc($result)) {
+while ($row = $result->fetch(PDO::FETCH_ASSOC)) {
 
     /*
     |--------------------------------------------------------------------------
@@ -524,19 +505,12 @@ while ($row = pg_fetch_assoc($result)) {
     |--------------------------------------------------------------------------
     */
 
-    $registration_query = pg_query_params(
-        $conn,
-        "SELECT COUNT(*)
+    $registration_query = $pdo->prepare("SELECT COUNT(*)
          FROM registrations
-         WHERE event_id = $1",
-        array($row['event_id'])
-    );
+         WHERE event_id = ?");
+    $registration_query->execute(array($row['event_id']));
 
-    $registered_count = (int) pg_fetch_result(
-        $registration_query,
-        0,
-        0
-    );
+    $registered_count = (int)(($registration_query->fetch(PDO::FETCH_NUM) ?: [0])[0]);
 
     $registration_limit =
         (int) $row['registration_limit'];
@@ -663,21 +637,18 @@ while ($row = pg_fetch_assoc($result)) {
     |--------------------------------------------------------------------------
     */
 
-    $registered_check = pg_query_params(
-        $conn,
-        "SELECT registration_id
+    $registered_check = $pdo->prepare("SELECT registration_id
          FROM registrations
-         WHERE event_id = $1
-           AND user_id = $2
-         LIMIT 1",
-        array(
-            $row['event_id'],
-            $student_id
-        )
-    );
+         WHERE event_id = ?
+           AND user_id = ?
+         LIMIT 1");
+    $registered_check->execute(array(
+        $row['event_id'],
+        $student_id
+    ));
 
     $is_registered =
-        pg_num_rows($registered_check) > 0;
+        $registered_check->rowCount() > 0;
 
     /*
     |--------------------------------------------------------------------------
@@ -776,28 +747,17 @@ foreach ($events_by_day as $day_events) {
 |--------------------------------------------------------------------------
 */
 
-$unread_count = (int) pg_fetch_result(
-    pg_query_params(
-        $conn,
-        "SELECT COUNT(*)
-         FROM notifications
-         WHERE user_id = $1
-           AND is_read = false",
-        array($student_id)
-    ),
-    0,
-    0
-);
-
-$recent_notifications = pg_query_params(
-    $conn,
-    "SELECT notification_id, type, message, is_read, created_at
+$unread_stmt = $pdo->prepare("SELECT COUNT(*)
      FROM notifications
-     WHERE user_id = $1
-     ORDER BY created_at DESC
-     LIMIT 5",
-    array($student_id)
-);
+     WHERE user_id = ?
+       AND is_read = 0");
+
+$unread_stmt->execute([$student_id]);
+
+$unread_count = (int) $unread_stmt->fetchColumn();
+
+$recent_notifications = $pdo->prepare("SELECT notification_id, type, message, is_read, created_at FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 5");
+$recent_notifications->execute([$student_id]);
 
 /*
 |--------------------------------------------------------------------------
@@ -1099,7 +1059,7 @@ $active_page = 'calendar';
 
 
             <a
-                href="my_qr.php"
+                    href="my_qr.php"
                 class="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl bg-rmc-800 hover:bg-rmc-900 text-white text-sm font-bold transition"
             >
 
@@ -1330,7 +1290,7 @@ $active_page = 'calendar';
         >
 
             <a
-                href="calendar.php?month=<?= $prev_month; ?>&year=<?= $prev_year; ?>"
+                    href="calendar.php?month=<?= $prev_month; ?>&year=<?= $prev_year; ?>"
                 class="flex-1 sm:flex-none inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl border border-rmc-200 bg-white hover:bg-rmc-50 text-rmc-800 text-sm font-bold transition"
             >
 
@@ -1344,7 +1304,7 @@ $active_page = 'calendar';
 
 
             <a
-                href="calendar.php"
+                    href="calendar.php"
                 class="inline-flex items-center justify-center px-4 py-2.5 rounded-xl bg-rmc-800 hover:bg-rmc-900 text-white text-sm font-bold transition"
             >
 
@@ -1354,7 +1314,7 @@ $active_page = 'calendar';
 
 
             <a
-                href="calendar.php?month=<?= $next_month; ?>&year=<?= $next_year; ?>"
+                    href="calendar.php?month=<?= $next_month; ?>&year=<?= $next_year; ?>"
                 class="flex-1 sm:flex-none inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl border border-rmc-200 bg-white hover:bg-rmc-50 text-rmc-800 text-sm font-bold transition"
             >
 
@@ -1735,7 +1695,7 @@ $active_page = 'calendar';
 
 
         <a
-            href="events.php"
+                href="events.php"
             class="inline-flex items-center gap-2 text-sm font-bold text-rmc-800 hover:text-rmc-900"
         >
 

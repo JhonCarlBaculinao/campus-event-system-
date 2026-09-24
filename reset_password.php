@@ -1,6 +1,5 @@
 <?php
 
-session_start();
 
 require 'db_connect.php';
 require 'csrf.php';
@@ -31,36 +30,31 @@ if ($token !== '') {
     |--------------------------------------------------------------------------
     */
 
-    $query = pg_query_params(
-        $conn,
-        "SELECT
-            user_id,
-            full_name,
+    $query = $pdo->prepare("SELECT
+            user_id, full_name,
             reset_token_expiry
          FROM users
-         WHERE reset_token = $1
-         LIMIT 1",
-        [$token_hash]
-    );
+         WHERE reset_token = ?
+         LIMIT 1");
+    $query->execute([$token_hash]);
 
     if (!$query) {
 
         error_log(
             "Password reset token lookup failed: " .
-            pg_last_error($conn)
+            ($pdo->errorInfo()[2] ?? '')
         );
 
         $token_invalid = true;
         $error = t('request_process_error');
 
-    } elseif (pg_num_rows($query) === 0) {
-
-        $token_invalid = true;
-        $error = t('reset_link_invalid');
-
     } else {
 
-        $user = pg_fetch_assoc($query);
+        $user = $query->fetch(PDO::FETCH_ASSOC);
+        if (!$user) {
+            $token_invalid = true;
+            $error = t('reset_link_invalid');
+        }
 
         /*
         |--------------------------------------------------------------------------
@@ -69,8 +63,10 @@ if ($token !== '') {
         */
 
         if (
-            empty($user['reset_token_expiry']) ||
-            strtotime($user['reset_token_expiry']) < time()
+            $user && (
+                empty($user['reset_token_expiry']) ||
+                strtotime($user['reset_token_expiry']) < time()
+            )
         ) {
 
             $token_invalid = true;
@@ -130,31 +126,28 @@ if (
             |
             */
 
-            $update = pg_query_params(
-                $conn,
-                "UPDATE users
-                 SET password = $1,
-                     reset_token = NULL,
-                     reset_token_expiry = NULL
-                 WHERE user_id = $2
-                   AND reset_token = $3",
-                [
-                    $hashed,
-                    $user['user_id'],
-                    $token_hash
-                ]
-            );
+            $update = $pdo->prepare("UPDATE users
+                 SET password = ?, reset_token = NULL,
+                     reset_token_expiry = NULL,
+                     session_token = NULL
+                 WHERE user_id = ?
+                   AND reset_token = ?");
+            $update->execute([
+                $hashed,
+                $user['user_id'],
+                $token_hash
+            ]);
 
             if (!$update) {
 
                 error_log(
                     "Password reset update failed: " .
-                    pg_last_error($conn)
+                    ($pdo->errorInfo()[2] ?? '')
                 );
 
                 $error = t('password_change_error');
 
-            } elseif (pg_affected_rows($update) !== 1) {
+            } elseif ($update->rowCount() !== 1) {
 
                 $error = t('reset_link_invalid');
 
@@ -217,7 +210,7 @@ if (
             <div class="text-center mt-6">
 
                 <a
-                    href="login.php"
+                        href="login.php"
                     class="font-bold text-rmc-800 hover:text-rmc-900"
                 >
                     <?= t('return_to_login'); ?>
@@ -305,7 +298,7 @@ if (
             <div class="text-center mt-6">
 
                 <a
-                    href="forgot_password.php"
+                        href="forgot_password.php"
                     class="inline-block w-full bg-rmc-800 hover:bg-rmc-900 text-white font-bold py-3 rounded-xl shadow-lg transition"
                 >
                     <?= t('send_reset_link'); ?>
@@ -318,7 +311,7 @@ if (
         <div class="text-center mt-8">
 
             <a
-                href="login.php"
+                    href="login.php"
                 class="font-semibold text-rmc-800 hover:text-rmc-900"
             >
                 <?= t('back_to_login'); ?>

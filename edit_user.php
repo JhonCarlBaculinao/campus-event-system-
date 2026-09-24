@@ -1,10 +1,10 @@
 <?php
 
-session_start();
 
 include 'db_connect.php';
 require 'lang.php';
 require 'csrf.php';
+require_once 'notifications_helper.php';
 
 /*
 |--------------------------------------------------------------------------
@@ -135,13 +135,9 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
         $target_id === $admin_id
     ) {
 
-        $current_admin_result = pg_query_params(
-            $conn,
-            "SELECT role FROM users WHERE user_id = $1",
-            [$admin_id]
-        );
+        $current_admin_result = $pdo->prepare("SELECT role FROM users WHERE user_id = ?"); $current_admin_result->execute([$admin_id]);
 
-        $current_admin = pg_fetch_assoc($current_admin_result);
+        $current_admin = $current_admin_result->fetch(PDO::FETCH_ASSOC);
 
         if ($current_admin && $role !== $current_admin['role']) {
 
@@ -157,19 +153,15 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
 
     if (empty($error)) {
 
-        $check_student = pg_query_params(
-            $conn,
-            "SELECT user_id
+        $check_student = $pdo->prepare("SELECT user_id
              FROM users
-             WHERE student_id = $1
-             AND user_id != $2",
-            [
+             WHERE student_id = ?
+             AND user_id != ?"); $check_student->execute([
                 $student_id,
                 $target_id
-            ]
-        );
+            ]);
 
-        if (pg_num_rows($check_student) > 0) {
+        if ($check_student->rowCount() > 0) {
 
             $error = t('username_in_use_msg');
         }
@@ -183,19 +175,15 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
 
     if (empty($error) && $email !== '') {
 
-        $check_email = pg_query_params(
-            $conn,
-            "SELECT user_id
+        $check_email = $pdo->prepare("SELECT user_id
              FROM users
-             WHERE LOWER(email) = LOWER($1)
-             AND user_id != $2",
-            [
+             WHERE LOWER(email) = LOWER(?)
+             AND user_id != ?"); $check_email->execute([
                 $email,
                 $target_id
-            ]
-        );
+            ]);
 
-        if (pg_num_rows($check_email) > 0) {
+        if ($check_email->rowCount() > 0) {
 
             $error = t('email_in_use_msg');
         }
@@ -209,15 +197,11 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
 
     if (empty($error)) {
 
-        $target_check = pg_query_params(
-            $conn,
-            "SELECT user_id
+        $target_check = $pdo->prepare("SELECT user_id
              FROM users
-             WHERE user_id = $1",
-            [$target_id]
-        );
+             WHERE user_id = ?"); $target_check->execute([$target_id]);
 
-        if (pg_num_rows($target_check) === 0) {
+        if ($target_check->rowCount() === 0) {
 
             $error = t('user_account_missing');
         }
@@ -238,20 +222,18 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
                 PASSWORD_DEFAULT
             );
 
-            $update_result = pg_query_params(
-                $conn,
-
-                "UPDATE users
+            $update_result = $pdo->prepare("UPDATE users
                  SET
-                    full_name = $1,
-                    student_id = $2,
-                    department = $3,
-                    email = $4,
-                    role = $5,
-                    password = $6
-                 WHERE user_id = $7",
+                    full_name = ?,
+                    student_id = ?,
+                    department = ?,
+                    email = ?,
+                    role = ?,
+                    password = ?,
+                    session_token = NULL
+                 WHERE user_id = ?");
 
-                [
+            $update_result->execute([
                     $full_name,
                     $student_id,
                     $department,
@@ -259,32 +241,27 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
                     $role,
                     $hashed_password,
                     $target_id
-                ]
-            );
+                ]);
 
         } else {
 
-            $update_result = pg_query_params(
-                $conn,
-
-                "UPDATE users
+            $update_result = $pdo->prepare("UPDATE users
                  SET
-                    full_name = $1,
-                    student_id = $2,
-                    department = $3,
-                    email = $4,
-                    role = $5
-                 WHERE user_id = $6",
+                    full_name = ?,
+                    student_id = ?,
+                    department = ?,
+                    email = ?,
+                    role = ?
+                 WHERE user_id = ?");
 
-                [
+            $update_result->execute([
                     $full_name,
                     $student_id,
                     $department,
                     $email !== '' ? $email : null,
                     $role,
                     $target_id
-                ]
-            );
+                ]);
         }
 
         if ($update_result) {
@@ -298,6 +275,50 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
             if ($target_id === $admin_id) {
 
                 $_SESSION['full_name'] = $full_name;
+                $self_token = bin2hex(random_bytes(32));
+                $pdo->prepare("UPDATE users SET session_token = ? WHERE user_id = ?")
+                    ->execute([hash('sha256', $self_token), $admin_id]);
+                $_SESSION['auth_token'] = $self_token;
+                if (isset($_SESSION['rmc_auth']['admin']) && is_array($_SESSION['rmc_auth']['admin'])) {
+                    $_SESSION['rmc_auth']['admin']['auth_token'] = $self_token;
+                    $_SESSION['rmc_auth']['admin']['full_name'] = $full_name;
+                }
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Notify the affected user (website + forced email) that their
+            | account info and/or password was changed by an administrator.
+            | Skip notifying if the admin is editing their own account.
+            |--------------------------------------------------------------------------
+            */
+
+            if ($target_id !== $admin_id) {
+
+                if (!empty($new_password)) {
+
+                    notify_user(
+                        $pdo,
+                        $target_id,
+                        'An administrator has changed the password on your account. If you did not request this, please contact the school administrator immediately.',
+                        'admin_action',
+                        'Regis Marie College - Your Account Password Was Changed',
+                        null,
+                        true
+                    );
+
+                } else {
+
+                    notify_user(
+                        $pdo,
+                        $target_id,
+                        'An administrator has updated your account information.',
+                        'admin_action',
+                        'Regis Marie College - Your Account Information Was Updated',
+                        null,
+                        true
+                    );
+                }
             }
 
             header("Location: admin_users.php?updated=1");
@@ -316,15 +337,11 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
 |--------------------------------------------------------------------------
 */
 
-$result = pg_query_params(
-    $conn,
-    "SELECT *
+$result = $pdo->prepare("SELECT *
      FROM users
-     WHERE user_id = $1",
-    [$target_id]
-);
+     WHERE user_id = ?"); $result->execute([$target_id]);
 
-$user = pg_fetch_assoc($result);
+$user = $result->fetch(PDO::FETCH_ASSOC);
 
 if (!$user) {
     die("User account not found.");
@@ -340,28 +357,11 @@ if (!$user) {
 $full_name = $_SESSION['full_name'] ?? '';
 $first_name = explode(' ', trim($full_name))[0];
 
-$unread_count = (int) pg_fetch_result(
-    pg_query_params(
-        $conn,
-        "SELECT COUNT(*)
-         FROM notifications
-         WHERE user_id = $1
-           AND is_read = false",
-        array($admin_id)
-    ),
-    0,
-    0
-);
+$unread_stmt = $pdo->prepare("SELECT COUNT(*) FROM notifications WHERE user_id = ? AND is_read = 0");
+$unread_stmt->execute([$admin_id]);
+$unread_count = (int) $unread_stmt->fetchColumn();
 
-$recent_notifications = pg_query_params(
-    $conn,
-    "SELECT notification_id, type, message, is_read, created_at
-     FROM notifications
-     WHERE user_id = $1
-     ORDER BY created_at DESC
-     LIMIT 5",
-    array($admin_id)
-);
+$recent_notifications = $pdo->prepare("SELECT notification_id, type, message, is_read, created_at FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 5"); $recent_notifications->execute([$admin_id]);
 
 $role_label  = 'Administrator';
 $page_title  = t('title_edit_user');
@@ -407,7 +407,7 @@ $active_page = '';
         </div>
 
         <a
-            href="admin_users.php"
+                href="admin_users.php"
             class="inline-flex items-center gap-2 bg-white hover:bg-rmc-50 border border-rmc-200 text-rmc-800 px-5 py-3 rounded-xl font-semibold transition self-start sm:self-auto"
         >
 
@@ -672,7 +672,7 @@ $active_page = '';
         <div class="flex flex-col sm:flex-row gap-4 pt-3">
 
             <a
-                href="admin_users.php"
+                    href="admin_users.php"
                 class="sm:w-1/2 text-center py-3 rounded-xl border border-slate-200 font-semibold text-slate-600 hover:bg-rmc-50 transition"
             >
 

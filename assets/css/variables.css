@@ -1,0 +1,246 @@
+/* =========================================================
+   RMC EVENTS — DESIGN TOKENS (CSS Custom Properties)
+   =========================================================
+   University-oriented palette: Deep Navy / University Blue
+   Claymorphism surface treatment: soft dual shadows + larger radii
+   ========================================================= */
+
+:root {
+  /* ---------------------------------------------------------
+     COLOR PALETTE — University Navy / Blue
+     --------------------------------------------------------- */
+  --color-primary-50:  #EFF6FF;
+  --color-primary-100: #DBEAFE;
+  --color-primary-200: #BFDBFE;
+  --color-primary-300: #93C5FD;
+  --color-primary-400: #60A5FA;
+  --color-primary-500: #3B82F6;
+  --color-primary-600: #2563EB;
+  --color-primary-700: #1D4ED8;
+  --color-primary-800: #1E3A5F;  /* Deep Navy - Main Brand */
+  --color-primary-900: #172A4A;
+  --color-primary-950: #0B1F3A;  /* Darkest Navy */
+
+  /* Accent - University Gold (sparingly) */
+  --color-accent-50:  #FFFBEB;
+  --color-accent-100: #FEF3C7;
+  --color-accent-200: #FDE68A;
+  --color-accent-300: #FCD34D;
+  --color-accent-400: #FBBF24;
+  --color-accent-500: #F59E0B;
+  --color-accent-600: #D97706;
+  --color-accent-700: #B45309;
+  --color-accent-800: #92400E;
+  --color-accent-900: #78350F;
+
+  /* Semantic Colors */
+  --color-success-50:  #F0FDF4;
+  --color-success-100: #DCFCE7;
+  --color-success-500: #22C55E;
+  --color-success-600: #16A34A;
+  --color-success-700: #15803D;
+
+  --color-warning-50:  #FFFBEB;
+  --color-warning-100: #FEF3C7;
+  --color-warning-500: #F59E0B;
+  --color-warning-600: #D97706;
+  --color-warning-700: #B45309;
+
+  --color-danger-50:  #FEF2F2;
+  --color-danger-100: #FEE2E2;
+  --color-danger-500: #EF4444;
+  --color-danger-600: #DC2626;
+  --color-danger-700: #B91C1C;
+
+  /* Neutral / Slate */
+  --color-neutral-50:  #F8FAFC;
+  --color-neutral-100: #F1F5F9;
+  --color-neutral-200: #E2E8F0;
+  --color-neutral-300: #CBD5E1;
+  --color-neutral-400: #94A3B8;
+  --color-neutral-500: #64748B;
+  --color-neutral-600: #475569;
+  --color-neutral-700: #334155;
+  --color-neutral-800: #1E293B;
+  --color-neutral-900: #0F172A;
+  --color-neutral-950: #020617;
+
+  /* Backgrounds */
+  --color-bg-primary:   #F7F9FC;
+  --color-bg-secondary: #FFFFFF;
+  --color-bg-tertiary:  #F1F5F9;
+  --color-bg-dark:      #0B1F3A;
+
+  /* Text */
+  --color-text-primary:   #172033;
+  --color-text-secondary: #64748B;
+  --color-text-tertiary:  #94A3B8;
+  --color-text-inverse:   #FFFFFF;
+  --color-text-muted:     #CBD5E1;
+
+  /* Borders */
+  --color-border-light:  #E5EAF0;
+  --color-border-medium: #CBD5E1;
+  --color-border-dark:   #94A3B8;
+  --color-border-focus:  #2563EB;
+
+  /* ---------------------------------------------------------
+     SPACING SCALE (4px base)
+     --------------------------------------------------------- */
+  --space-1:  0.25rem;
+  --space-2:  0.5rem;
+  --space-3:  0.75rem;
+  --space-4:  1rem;
+  --space-5:  1.25rem;
+  --space-6:  1.5rem;
+  --space-8:  2rem;
+  --space-10: 2.5rem;
+  --space-12: 3rem;
+  --space-16: 4rem;
+  --space-20: 5rem;
+  --space-24: 6rem;
+
+  /* ---------------------------------------------------------
+     BORDER RADIUS — enlarged for claymorphism
+     --------------------------------------------------------- */
+  --radius-sm:    0.5rem;    /* 8px  (was 6px) */
+  --radius-md:    0.75rem;   /* 12px (was 8px) */
+  --radius-lg:    1rem;      /* 16px (was 12px) */
+  --radius-xl:    1.5rem;    /* 24px (was 16px) */
+  --radius-2xl:   2rem;      /* 32px (was 20px) */
+  --radius-full:  9999px;
+
+  /* ---------------------------------------------------------
+     SHADOWS — claymorphism dual light/dark soft shadows
+     Tinted with brand navy instead of flat black.
+     --------------------------------------------------------- */
+  --shadow-xs:  3px 3px 6px rgba(30,58,95,0.08),  -2px -2px 5px rgba(255,255,255,0.6);
+  --shadow-sm:  5px 5px 12px rgba(30,58,95,0.10), -4px -4px 10px rgba(255,255,255,0.7);
+  --shadow-md:  8px 8px 18px rgba(30,58,95,0.12), -6px -6px 14px rgba(255,255,255,0.75);
+  --shadow-lg:  12px 12px 28px rgba(30,58,95,0.14), -8px -8px 20px rgba(255,255,255,0.8);
+  --shadow-xl:  16px 16px 36px rgba(30,58,95,0.16), -10px -10px 24px rgba(255,255,255,0.85);
+  --shadow-2xl: 22px 22px 48px rgba(30,58,95,0.20), -14px -14px 30px rgba(255,255,255,0.85);
+
+  /* Inset "pressed into clay" shadows — used for inputs & active states */
+  --shadow-clay-inset:    inset 4px 4px 8px rgba(30,58,95,0.10), inset -4px -4px 8px rgba(255,255,255,0.6);
+  --shadow-clay-inset-sm: inset 3px 3px 6px rgba(30,58,95,0.08), inset -3px -3px 6px rgba(255,255,255,0.55);
+
+  /* Colored (brand) clay shadows for primary buttons/CTAs */
+  --shadow-primary-sm: 4px 4px 10px rgba(30,58,95,0.25), -2px -2px 6px rgba(255,255,255,0.4);
+  --shadow-primary-md: 6px 6px 16px rgba(30,58,95,0.30), -3px -3px 10px rgba(255,255,255,0.35);
+  --shadow-primary-lg: 10px 10px 24px rgba(30,58,95,0.32), -5px -5px 14px rgba(255,255,255,0.3);
+
+  /* ---------------------------------------------------------
+     TYPOGRAPHY
+     --------------------------------------------------------- */
+  --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+
+  --text-xs:    0.75rem;
+  --text-sm:    0.875rem;
+  --text-base:  1rem;
+  --text-lg:    1.125rem;
+  --text-xl:    1.25rem;
+  --text-2xl:   1.5rem;
+  --text-3xl:   1.875rem;
+  --text-4xl:   2.25rem;
+  --text-5xl:   3rem;
+  --text-6xl:   3.75rem;
+
+  --font-normal: 400;
+  --font-medium: 500;
+  --font-semibold: 600;
+  --font-bold: 700;
+
+  --leading-tight: 1.25;
+  --leading-normal: 1.5;
+  --leading-relaxed: 1.625;
+
+  /* ---------------------------------------------------------
+     TRANSITIONS
+     --------------------------------------------------------- */
+  --transition-fast: 100ms ease;
+  --transition-base: 150ms ease;
+  --transition-slow: 250ms ease;
+  --transition-slower: 350ms ease;
+
+  /* ---------------------------------------------------------
+     Z-INDEX SCALE
+     --------------------------------------------------------- */
+  --z-dropdown:   100;
+  --z-sticky:     200;
+  --z-fixed:      300;
+  --z-modal-backdrop: 400;
+  --z-modal:      500;
+  --z-popover:    600;
+  --z-tooltip:    700;
+  --z-toast:      800;
+  --z-loading:    9999;
+
+  /* ---------------------------------------------------------
+     LAYOUT DIMENSIONS
+     --------------------------------------------------------- */
+  --sidebar-width: 18rem;
+  --sidebar-collapsed-width: 5rem;
+  --header-height: 4rem;
+  --container-max: 64rem;
+  --container-wide: 80rem;
+  --container-full: 100rem;
+
+  /* ---------------------------------------------------------
+     BREAKPOINTS (for reference in JS)
+     --------------------------------------------------------- */
+  --bp-sm:  640px;
+  --bp-md:  768px;
+  --bp-lg:  1024px;
+  --bp-xl:  1280px;
+  --bp-2xl: 1536px;
+}
+
+/* =========================================================
+   DARK MODE OVERRIDES
+   ========================================================= */
+.dark,
+[data-theme="dark"] {
+  --color-bg-primary:   #0B1F3A;
+  --color-bg-secondary: #172A4A;
+  --color-bg-tertiary:  #1E3A5F;
+  --color-bg-dark:      #020617;
+
+  --color-text-primary:   #F1F5F9;
+  --color-text-secondary: #94A3B8;
+  --color-text-tertiary:  #64748B;
+  --color-text-inverse:   #0F172A;
+  --color-text-muted:     #475569;
+
+  --color-border-light:  #1E3A5F;
+  --color-border-medium: #334155;
+  --color-border-dark:   #475569;
+
+  /* Dark-mode clay shadows: deeper black shadow, faint navy highlight */
+  --shadow-xs:  3px 3px 6px rgba(0,0,0,0.35),  -2px -2px 5px rgba(255,255,255,0.03);
+  --shadow-sm:  5px 5px 12px rgba(0,0,0,0.4),  -4px -4px 10px rgba(255,255,255,0.04);
+  --shadow-md:  8px 8px 18px rgba(0,0,0,0.45), -6px -6px 14px rgba(255,255,255,0.05);
+  --shadow-lg:  12px 12px 28px rgba(0,0,0,0.5), -8px -8px 20px rgba(255,255,255,0.05);
+  --shadow-xl:  16px 16px 36px rgba(0,0,0,0.55), -10px -10px 24px rgba(255,255,255,0.06);
+  --shadow-2xl: 22px 22px 48px rgba(0,0,0,0.6), -14px -14px 30px rgba(255,255,255,0.06);
+
+  --shadow-clay-inset:    inset 4px 4px 8px rgba(0,0,0,0.4), inset -4px -4px 8px rgba(255,255,255,0.04);
+  --shadow-clay-inset-sm: inset 3px 3px 6px rgba(0,0,0,0.35), inset -3px -3px 6px rgba(255,255,255,0.03);
+
+  --shadow-primary-sm: 4px 4px 10px rgba(0,0,0,0.4), -2px -2px 6px rgba(255,255,255,0.03);
+  --shadow-primary-md: 6px 6px 16px rgba(0,0,0,0.45), -3px -3px 10px rgba(255,255,255,0.04);
+  --shadow-primary-lg: 10px 10px 24px rgba(0,0,0,0.5), -5px -5px 14px rgba(255,255,255,0.04);
+}
+
+/* =========================================================
+   REDUCED MOTION
+   ========================================================= */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --transition-fast: 0ms;
+    --transition-base: 0ms;
+    --transition-slow: 0ms;
+    --transition-slower: 0ms;
+  }
+}

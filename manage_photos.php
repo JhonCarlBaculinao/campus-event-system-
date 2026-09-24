@@ -1,5 +1,4 @@
 <?php
-session_start();
 include 'db_connect.php';
 require 'lang.php';
 require 'csrf.php';
@@ -15,16 +14,29 @@ $first_name = explode(' ', trim($full_name))[0];
 $event_id = $_GET['id'] ?? null;
 $organizer_id = $_SESSION['user_id'];
 
+function rmc_event_photo_web_path($path) {
+    $path = ltrim((string) $path, '/');
+    if ($path === '') return '';
+    if (strpos($path, 'assets/uploads/events/') === 0) return $path;
+    if (strpos($path, 'img/') === 0) return $path;
+    return 'img/' . basename($path);
+}
+
+function rmc_event_photo_file_path($path) {
+    $web = rmc_event_photo_web_path($path);
+    if ($web === '') return '';
+    return __DIR__ . '/' . $web;
+}
+
 // Confirm this event belongs to the logged-in organizer
-$owner_check = pg_query_params($conn,
-    "SELECT * FROM events WHERE event_id=$1 AND organizer_id=$2",
-    array($event_id, $organizer_id)
-);
-if (pg_num_rows($owner_check) === 0) {
+$owner_check = $pdo->prepare("SELECT * FROM events WHERE event_id=? AND organizer_id=? LIMIT 1");
+$owner_check->execute([$event_id, $organizer_id]);
+$owned_event = $owner_check->fetch(PDO::FETCH_ASSOC);
+if (!$owned_event) {
     http_response_code(403);
     die("Access denied. You can only manage photos for your own events.");
 }
-$event = pg_fetch_assoc($owner_check);
+$event = $owned_event;
 
 $error = '';
 $success = '';
@@ -36,10 +48,15 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
 
 // ---- Upload new photo(s) ----
 if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_FILES['photos'])) {
-    $allowed_ext = ['jpg', 'jpeg', 'png', 'webp'];
     $allowed_mimes = ['image/jpeg', 'image/png', 'image/webp'];
+    $mime_to_ext = [
+        'image/jpeg' => 'jpg',
+        'image/png'  => 'png',
+        'image/webp' => 'webp',
+    ];
     $max_size = 5 * 1024 * 1024;
     $uploaded_count = 0;
+    $finfo = new finfo(FILEINFO_MIME_TYPE);
 
     foreach ($_FILES['photos']['tmp_name'] as $i => $tmp_name) {
         if ($_FILES['photos']['error'][$i] !== UPLOAD_ERR_OK) {
@@ -50,12 +67,8 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_FILES['photos'])) {
             continue;
         }
 
-        $file_ext = strtolower(pathinfo($_FILES['photos']['name'][$i], PATHINFO_EXTENSION));
-        if (!in_array($file_ext, $allowed_ext, true)) {
-            continue;
-        }
-
-        if (!in_array($_FILES['photos']['type'][$i] ?? '', $allowed_mimes, true)) {
+        $detected_mime = $finfo->file($tmp_name);
+        if (!in_array($detected_mime, $allowed_mimes, true)) {
             continue;
         }
 
@@ -63,13 +76,12 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_FILES['photos'])) {
             continue;
         }
 
-        $new_filename = uniqid('eventphoto_') . '.' . $file_ext;
+        $file_ext = $mime_to_ext[$detected_mime];
+        $new_filename = bin2hex(random_bytes(16)) . '.' . $file_ext;
         $upload_path = 'img/' . $new_filename;
         if (move_uploaded_file($tmp_name, $upload_path)) {
-            pg_query_params($conn,
-                "INSERT INTO event_photos (event_id, image_path) VALUES ($1, $2)",
-                array($event_id, $new_filename)
-            );
+            $insert_photo = $pdo->prepare("INSERT INTO event_photos (event_id, image_path) VALUES (?, ?)");
+            $insert_photo->execute([$event_id, $new_filename]);
             $uploaded_count++;
         }
     }
@@ -83,16 +95,17 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_FILES['photos'])) {
 
 // ---- Delete a photo ----
 if (isset($_POST['delete_photo_id'])) {
-    $photo = pg_fetch_assoc(pg_query_params($conn,
-        "SELECT * FROM event_photos WHERE photo_id=$1 AND event_id=$2",
-        array($_POST['delete_photo_id'], $event_id)
-    ));
+    $photo_stmt = $pdo->prepare("SELECT * FROM event_photos WHERE photo_id=? AND event_id=?");
+    $photo_stmt->execute([$_POST['delete_photo_id'], $event_id]);
+    $photo = $photo_stmt->fetch(PDO::FETCH_ASSOC);
+
     if ($photo) {
-        $file_path = 'img/' . $photo['image_path'];
+        $file_path = rmc_event_photo_file_path($photo['image_path']);
         if (file_exists($file_path)) {
             unlink($file_path);
         }
-        pg_query_params($conn, "DELETE FROM event_photos WHERE photo_id=$1", array($_POST['delete_photo_id']));
+        $delete_stmt = $pdo->prepare("DELETE FROM event_photos WHERE photo_id=?");
+        $delete_stmt->execute([$_POST['delete_photo_id']]);
         $success = t('photo_deleted_msg');
     }
 }
@@ -103,57 +116,50 @@ if (isset($_POST['bulk_delete_ids']) && is_array($_POST['bulk_delete_ids'])) {
     $deleted = 0;
     $failed = 0;
     foreach ($ids as $pid) {
-        $photo = pg_fetch_assoc(pg_query_params($conn,
-            "SELECT * FROM event_photos WHERE photo_id=$1 AND event_id=$2",
-            array($pid, $event_id)
-        ));
+        $photo_stmt = $pdo->prepare("SELECT * FROM event_photos WHERE photo_id=? AND event_id=?");
+        $photo_stmt->execute([$pid, $event_id]);
+        $photo = $photo_stmt->fetch(PDO::FETCH_ASSOC);
+
         if (!$photo) { $failed++; continue; }
-        $file_path = 'img/' . $photo['image_path'];
-        if (!empty($photo['image_path']) && file_exists($file_path)) {
+        $file_path = rmc_event_photo_file_path($photo['image_path']);
+        if (!empty($photo['image_path']) && $file_path !== '' && is_file($file_path)) {
             unlink($file_path);
         }
-        pg_query_params($conn, "DELETE FROM event_photos WHERE photo_id=$1", array($pid));
+        $delete_stmt = $pdo->prepare("DELETE FROM event_photos WHERE photo_id=?");
+        $delete_stmt->execute([$pid]);
         $deleted++;
     }
     $success = sprintf(t('photos_deleted_msg'), $deleted);
     if ($failed > 0) { $success .= ' ' . sprintf(t('photos_not_found_msg'), $failed); }
 }
 
-$photos = pg_query_params($conn, "SELECT * FROM event_photos WHERE event_id=$1 ORDER BY uploaded_at DESC", array($event_id));
+$photos = $pdo->prepare("SELECT * FROM event_photos WHERE event_id=? ORDER BY uploaded_at DESC");
+$photos->execute([$event_id]);
 
 
 /* =========================================================
    UNREAD COUNT + RECENT NOTIFICATIONS (shared header)
    ========================================================= */
 
-$unread_count = (int) pg_fetch_result(
-    pg_query_params(
-        $conn,
-        "SELECT COUNT(*)
+$unread_stmt = $pdo->prepare("SELECT COUNT(*)
          FROM notifications
-         WHERE user_id = $1
-           AND is_read = false",
-        array($_SESSION['user_id'])
-    ),
-    0,
-    0
-);
+         WHERE user_id = ? AND is_read = false");
+$unread_stmt->execute([$_SESSION['user_id']]);
+$unread_count = (int)$unread_stmt->fetchColumn();
 
-$recent_notifications = pg_query_params(
-    $conn,
-    "SELECT notification_id, type, message, is_read, created_at
+$recent_notifications = $pdo->prepare("SELECT notification_id, type, message, is_read, created_at
      FROM notifications
-     WHERE user_id = $1
+     WHERE user_id = ?
      ORDER BY created_at DESC
-     LIMIT 5",
-    array($_SESSION['user_id'])
-);
+     LIMIT 5");
+$recent_notifications->execute([$_SESSION['user_id']]);
 
 
 /* =========================================================
    PAGE VARIABLES (shared partials)
    ========================================================= */
 
+$role = 'organizer';
 $role_label = 'Event Organizer';
 
 $page_title  = t('title_manage_photos');
@@ -196,7 +202,7 @@ $active_page = '';
     </div>
 
     <a
-        href="dashboard.php"
+            href="dashboard.php"
         class="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-white hover:bg-rmc-50 border border-rmc-200 text-rmc-800 font-semibold text-sm shrink-0 self-start sm:self-auto"
     >
 
@@ -244,17 +250,33 @@ $active_page = '';
 
 <div class="bg-white rounded-[26px] border border-slate-200 shadow-sm p-6 sm:p-8 mb-8 animate-up delay-1">
 
-    <h2 class="text-xl font-bold text-slate-900 mb-6 flex items-center gap-3">
+    <div class="flex items-center justify-between mb-6 flex-wrap gap-3">
 
-        <span class="w-10 h-10 rounded-xl bg-rmc-50 text-rmc-800 flex items-center justify-center">
+        <h2 class="text-xl font-bold text-slate-900 flex items-center gap-3">
 
-            <i class="fa-solid fa-cloud-arrow-up"></i>
+            <span class="w-10 h-10 rounded-xl bg-rmc-50 text-rmc-800 flex items-center justify-center">
 
-        </span>
+                <i class="fa-solid fa-cloud-arrow-up"></i>
 
-        <?= t('upload_photos_btn'); ?>
+            </span>
 
-    </h2>
+            <?= t('upload_photos_btn'); ?>
+
+        </h2>
+
+        <button
+            type="button"
+            id="chooseFilesBtn"
+            class="inline-flex items-center gap-2 bg-rmc-800 hover:bg-rmc-900 text-white font-semibold px-5 py-2.5 rounded-xl text-sm transition"
+        >
+
+            <i class="fa-solid fa-plus"></i>
+
+            <?= t('upload_photos_btn'); ?>
+
+        </button>
+
+    </div>
 
     <form method="POST" enctype="multipart/form-data" id="uploadForm">
 
@@ -318,7 +340,7 @@ $active_page = '';
      UPLOADED PHOTOS
      ========================================================= -->
 
-<?php $photo_count = pg_num_rows($photos); ?>
+<?php $photo_count = $photos->rowCount(); ?>
 
 <div class="bg-white rounded-[26px] border border-slate-200 shadow-sm p-6 sm:p-8 animate-up delay-2">
 
@@ -369,7 +391,7 @@ $active_page = '';
 
                 <div id="bulkDeleteBar" class="hidden flex-1 flex items-center gap-3 ml-auto">
                     <span class="text-sm font-semibold text-red-700"><span id="bulkDeleteCount">0</span> <?= t('selected_count'); ?></span>
-                    <button type="button" onclick="openConfirmModal({bulkForm: document.getElementById('bulkDeletePhotoForm'), title: <?= json_encode(t('delete_photo')) ?>, message: <?= json_encode(t('bulk_delete_photos_confirm') ?: 'Delete selected photos? This cannot be undone.') ?>, itemName: '<?= t('selected_photos') ?>', itemLabel: <?= json_encode(t('photo')) ?>, actionText: <?= json_encode(t('delete_photo')) ?>, color: 'red', icon: 'fa-solid fa-trash'});"
+                    <button type="button" onclick="openConfirmModal({bulkForm: document.getElementById('bulkDeletePhotoForm'), title: <?= htmlspecialchars(json_encode(t('delete_photo')), ENT_QUOTES) ?>, message: <?= htmlspecialchars(json_encode(t('bulk_delete_photos_confirm') ?: 'Delete selected photos? This cannot be undone.'), ENT_QUOTES) ?>, itemName: <?= htmlspecialchars(json_encode(t('selected_photos')), ENT_QUOTES) ?>, itemLabel: <?= htmlspecialchars(json_encode(t('photo')), ENT_QUOTES) ?>, actionText: <?= htmlspecialchars(json_encode(t('delete_photo')), ENT_QUOTES) ?>, color: 'red', icon: 'fa-solid fa-trash'});"
                         class="inline-flex items-center gap-2 bg-red-700 hover:bg-red-800 text-white px-4 py-2 rounded-xl text-sm font-semibold transition">
                         <i class="fa-solid fa-trash"></i>
                         <?= t('delete_photo'); ?>
@@ -377,24 +399,26 @@ $active_page = '';
                 </div>
             </div>
 
+        </form>
+
         <div class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-4 sm:gap-5">
 
-            <?php $photo_idx = 0; while ($photo = pg_fetch_assoc($photos)): ?>
+            <?php $photo_idx = 0; while ($photo = $photos->fetch(PDO::FETCH_ASSOC)): ?>
 
                 <div class="photo-card relative group rounded-2xl overflow-hidden border border-slate-200 bg-slate-50 transition-all duration-300 hover:shadow-xl hover:shadow-slate-200/60 hover:-translate-y-1 hover:border-rmc-200 cursor-pointer"
                      data-idx="<?= $photo_idx; ?>"
-                     data-src="img/<?= htmlspecialchars($photo['image_path']); ?>"
+                     data-src="<?= htmlspecialchars(rmc_event_photo_web_path($photo['image_path'])); ?>"
                      data-date="<?= htmlspecialchars($photo['uploaded_at']); ?>"
                      onclick="if(!event.target.closest('label') && !event.target.closest('form')) openLightbox(<?= $photo_idx; ?>);"
                 >
 
                     <label class="absolute top-2 left-2 z-10">
-                        <input type="checkbox" name="bulk_delete_ids[]" value="<?= $photo['photo_id']; ?>" class="bulk-cb photo-row-cb w-4 h-4 rounded border-slate-300 text-rmc-800 focus:ring-rmc-500 cursor-pointer bg-white/90" aria-label="<?= t('select_photo'); ?>">
+                        <input type="checkbox" name="bulk_delete_ids[]" value="<?= $photo['photo_id']; ?>" form="bulkDeletePhotoForm" class="bulk-cb photo-row-cb w-4 h-4 rounded border-slate-300 text-rmc-800 focus:ring-rmc-500 cursor-pointer bg-white/90" aria-label="<?= t('select_photo'); ?>">
                     </label>
 
                     <div class="relative overflow-hidden">
                         <img
-                            src="img/<?= htmlspecialchars($photo['image_path']); ?>"
+                            src="<?= htmlspecialchars(rmc_event_photo_web_path($photo['image_path'])); ?>"
                             class="w-full h-36 sm:h-44 object-cover transition-transform duration-500 group-hover:scale-110"
                             loading="lazy"
                         >
@@ -430,7 +454,7 @@ $active_page = '';
                         <button
                             type="button"
                             class="bg-red-600 hover:bg-red-700 text-white w-9 h-9 rounded-full text-sm flex items-center justify-center shadow-lg transition"
-                            onclick="event.stopPropagation(); openConfirmModal({form: this.closest('form'), title: <?= json_encode(t('delete_photo')) ?>, message: <?= json_encode(t('confirm_delete')) ?>, itemName: <?= json_encode(t('photo')) ?>, itemLabel: <?= json_encode(t('photo')) ?>, actionText: <?= json_encode(t('delete_photo')) ?>, color: 'red', icon: 'fa-solid fa-trash'});"
+                            onclick="event.stopPropagation(); openConfirmModal({form: this.closest('form'), title: <?= htmlspecialchars(json_encode(t('delete_photo')), ENT_QUOTES) ?>, message: <?= htmlspecialchars(json_encode(t('confirm_delete')), ENT_QUOTES) ?>, itemName: <?= htmlspecialchars(json_encode(t('photo')), ENT_QUOTES) ?>, itemLabel: <?= htmlspecialchars(json_encode(t('photo')), ENT_QUOTES) ?>, actionText: <?= htmlspecialchars(json_encode(t('delete_photo')), ENT_QUOTES) ?>, color: 'red', icon: 'fa-solid fa-trash'});"
                             aria-label="<?= t('delete_photo'); ?>"
                         >
 
@@ -445,8 +469,6 @@ $active_page = '';
             <?php $photo_idx++; endwhile; ?>
 
         </div>
-
-        </form>
 
     <?php endif; ?>
 
@@ -605,9 +627,14 @@ document.addEventListener('keydown', function(e) {
     var uploadBtnText = document.getElementById('uploadBtnText');
     var dropIcon = document.getElementById('dropIcon');
     var dropText = document.getElementById('dropText');
+    var chooseFilesBtn = document.getElementById('chooseFilesBtn');
     if (!dropZone) return;
 
     dropZone.addEventListener('click', function() { fileInput.click(); });
+
+    if (chooseFilesBtn) {
+        chooseFilesBtn.addEventListener('click', function() { fileInput.click(); });
+    }
 
     dropZone.addEventListener('dragenter', function(e) { e.preventDefault(); dropZone.classList.add('border-rmc-500', 'bg-rmc-50/50'); dropIcon.classList.add('text-rmc-600'); dropText.classList.add('text-rmc-700'); });
     dropZone.addEventListener('dragover', function(e) { e.preventDefault(); });

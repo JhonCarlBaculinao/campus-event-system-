@@ -92,7 +92,7 @@ function require_role($required_role)
                 </p>
 
                 <a
-                    href="dashboard.php"
+                        href="dashboard.php"
                     class="inline-block bg-gradient-to-r from-red-700 to-red-900 text-white font-bold px-6 py-3 rounded-xl hover:opacity-90 transition"
                 >
                     Return to Dashboard

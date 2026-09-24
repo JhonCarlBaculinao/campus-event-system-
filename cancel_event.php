@@ -1,6 +1,5 @@
 <?php
 
-session_start();
 
 require 'db_connect.php';
 require 'send_email.php';
@@ -60,9 +59,7 @@ if ($event_id <= 0) {
 |--------------------------------------------------------------------------
 */
 
-$event_result = pg_query_params(
-    $conn,
-    "SELECT
+$event_result = $pdo->prepare("SELECT
         e.event_id,
         e.title,
         e.event_date,
@@ -74,27 +71,27 @@ $event_result = pg_query_params(
      FROM events e
      JOIN users u
        ON e.organizer_id = u.user_id
-     WHERE e.event_id = $1
-       AND e.organizer_id = $2
-     LIMIT 1",
-    [
-        $event_id,
-        $organizer_id
-    ]
-);
+     WHERE e.event_id = ?
+       AND e.organizer_id = ?
+     LIMIT 1");
+
+$event_result->execute([
+    $event_id,
+    $organizer_id
+]);
 
 if (!$event_result) {
 
     error_log(
         "Cancel event lookup failed: " .
-        pg_last_error($conn)
+        ($pdo->errorInfo()[2] ?? '')
     );
 
     die("Unable to process the event.");
 
 }
 
-if (pg_num_rows($event_result) === 0) {
+if ($event_result->rowCount() === 0) {
 
     http_response_code(404);
 
@@ -104,7 +101,7 @@ if (pg_num_rows($event_result) === 0) {
 
 }
 
-$event = pg_fetch_assoc($event_result);
+$event = $event_result->fetch(PDO::FETCH_ASSOC);
 
 /*
 |--------------------------------------------------------------------------
@@ -128,25 +125,23 @@ if ($event['status'] !== 'approved') {
 |
 */
 
-$students = pg_query_params(
-    $conn,
-    "SELECT DISTINCT
+$students = $pdo->prepare("SELECT DISTINCT
         u.user_id,
         u.email,
         u.full_name
      FROM registrations r
      JOIN users u
        ON r.user_id = u.user_id
-     WHERE r.event_id = $1
-       AND u.role = 'student'",
-    [$event_id]
-);
+     WHERE r.event_id = ?
+       AND u.role = 'student'");
+
+$students->execute([$event_id]);
 
 if (!$students) {
 
     error_log(
         "Cancel event student lookup failed: " .
-        pg_last_error($conn)
+        ($pdo->errorInfo()[2] ?? '')
     );
 
     die("Unable to process event notifications.");
@@ -155,7 +150,7 @@ if (!$students) {
 
 $student_recipients = [];
 
-while ($student = pg_fetch_assoc($students)) {
+while ($student = $students->fetch(PDO::FETCH_ASSOC)) {
 
     $student_recipients[] = $student;
 
@@ -167,21 +162,18 @@ while ($student = pg_fetch_assoc($students)) {
 |--------------------------------------------------------------------------
 */
 
-$admins_result = pg_query(
-    $conn,
-    "SELECT
+$admins_result = $pdo->query("SELECT
         user_id,
         email,
         full_name
      FROM users
-     WHERE role = 'admin'"
-);
+     WHERE role = 'admin'");
 
 if (!$admins_result) {
 
     error_log(
         "Cancel event admin lookup failed: " .
-        pg_last_error($conn)
+        ($pdo->errorInfo()[2] ?? '')
     );
 
     die("Unable to process event notifications.");
@@ -190,7 +182,7 @@ if (!$admins_result) {
 
 $admin_recipients = [];
 
-while ($admin = pg_fetch_assoc($admins_result)) {
+while ($admin = $admins_result->fetch(PDO::FETCH_ASSOC)) {
 
     $admin_recipients[] = $admin;
 
@@ -202,7 +194,7 @@ while ($admin = pg_fetch_assoc($admins_result)) {
 |--------------------------------------------------------------------------
 */
 
-if (!pg_query($conn, "BEGIN")) {
+if (!$pdo->beginTransaction()) {
 
     die("Unable to start the cancellation process.");
 
@@ -216,34 +208,28 @@ try {
     |--------------------------------------------------------------------------
     */
 
-    $update = pg_query_params(
-        $conn,
-        "UPDATE events
+    $update = $pdo->prepare("UPDATE events
          SET status = 'cancelled'
-         WHERE event_id = $1
-           AND organizer_id = $2
-           AND status = 'approved'",
-        [
-            $event_id,
-            $organizer_id
-        ]
-    );
+         WHERE event_id = ?
+           AND organizer_id = ?
+           AND status = 'approved'");
 
-    if (!$update) {
+    $update->execute([
+        $event_id,
+        $organizer_id
+    ]);
 
-        throw new Exception(
-            "Database error while cancelling event."
-        );
-
-    }
-
-    if (pg_affected_rows($update) !== 1) {
+    if ($update->rowCount() !== 1) {
 
         throw new Exception(
             "Event could not be cancelled."
         );
 
     }
+
+    // Keep registration state consistent with the cancelled event.
+    $cancel_regs = $pdo->prepare("UPDATE registrations SET status = 'cancelled' WHERE event_id = ? AND status = 'registered'");
+    $cancel_regs->execute([$event_id]);
 
     /*
     |--------------------------------------------------------------------------
@@ -256,9 +242,7 @@ try {
         $event['title'] .
         '" has been cancelled.';
 
-    $notification = pg_query_params(
-        $conn,
-        "INSERT INTO notifications
+    $notification = $pdo->prepare("INSERT INTO notifications
         (
             user_id,
             message,
@@ -268,25 +252,17 @@ try {
         )
         VALUES
         (
-            $1,
-            $2,
+            ?,
+            ?,
             'event_cancelled',
             false,
             NOW()
-        )",
-        [
-            $organizer_id,
-            $organizer_message
-        ]
-    );
+        )");
 
-    if (!$notification) {
-
-        throw new Exception(
-            "Unable to create organizer notification."
-        );
-
-    }
+    $notification->execute([
+        $organizer_id,
+        $organizer_message
+    ]);
 
     /*
     |--------------------------------------------------------------------------
@@ -301,9 +277,7 @@ try {
             $event['title'] .
             '" has been cancelled by the organizer.';
 
-        $notification = pg_query_params(
-            $conn,
-            "INSERT INTO notifications
+        $notification = $pdo->prepare("INSERT INTO notifications
             (
                 user_id,
                 message,
@@ -313,25 +287,17 @@ try {
             )
             VALUES
             (
-                $1,
-                $2,
+                ?,
+                ?,
                 'event_cancelled',
                 false,
                 NOW()
-            )",
-            [
-                $student['user_id'],
-                $student_message
-            ]
-        );
+            )");
 
-        if (!$notification) {
-
-            throw new Exception(
-                "Unable to create student notification."
-            );
-
-        }
+        $notification->execute([
+            $student['user_id'],
+            $student_message
+        ]);
 
     }
 
@@ -350,9 +316,7 @@ try {
             $event['organizer_name'] .
             '".';
 
-        $notification = pg_query_params(
-            $conn,
-            "INSERT INTO notifications
+        $notification = $pdo->prepare("INSERT INTO notifications
             (
                 user_id,
                 message,
@@ -362,25 +326,17 @@ try {
             )
             VALUES
             (
-                $1,
-                $2,
+                ?,
+                ?,
                 'event_cancelled',
                 false,
                 NOW()
-            )",
-            [
-                $admin['user_id'],
-                $admin_message
-            ]
-        );
+            )");
 
-        if (!$notification) {
-
-            throw new Exception(
-                "Unable to create admin notification."
-            );
-
-        }
+        $notification->execute([
+            $admin['user_id'],
+            $admin_message
+        ]);
 
     }
 
@@ -390,17 +346,11 @@ try {
     |--------------------------------------------------------------------------
     */
 
-    if (!pg_query($conn, "COMMIT")) {
-
-        throw new Exception(
-            "Unable to commit event cancellation."
-        );
-
-    }
+    $pdo->commit();
 
 } catch (Throwable $e) {
 
-    pg_query($conn, "ROLLBACK");
+    $pdo->rollBack();
 
     error_log(
         "Event cancellation failed: " .
@@ -451,7 +401,7 @@ if (!empty($event['organizer_email'])) {
         '</strong>
         has been cancelled.</p>';
 
-    if (!send_email_deferred(
+    if (!send_notification_email(
         $event['organizer_email'],
         'Event Cancelled',
         $organizer_email_message
@@ -521,7 +471,7 @@ foreach ($student_recipients as $student) {
         for other available events.
         </p>';
 
-    if (!send_email_deferred(
+    if (!send_notification_email(
         $student['email'],
         'Event Cancelled - ' . $event['title'],
         $message
@@ -600,7 +550,7 @@ foreach ($admin_recipients as $admin) {
         '</strong>
         </p>';
 
-    if (!send_email_deferred(
+    if (!send_notification_email(
         $admin['email'],
         'Event Cancelled - Admin Notification',
         $message
@@ -623,5 +573,3 @@ foreach ($admin_recipients as $admin) {
 
 header("Location: dashboard.php?cancelled=1");
 exit();
-
-?>

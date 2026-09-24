@@ -1,36 +1,61 @@
 <?php
+if (!defined('BASE_URL')) {
+    $script_path = parse_url($_SERVER['SCRIPT_NAME'] ?? '', PHP_URL_PATH) ?: '';
+    $base_path = rtrim(str_replace('\\', '/', dirname($script_path)), '/');
+    define('BASE_URL', ($base_path === '/' || $base_path === '.') ? '' : $base_path);
+}
+/*
+ |--------------------------------------------------------------------------
+ | ERROR REPORTING
+ |--------------------------------------------------------------------------
+ | Log PHP errors server-side; never expose internal details to visitors.
+ */
+ini_set('display_errors', 0);
+ini_set('display_startup_errors', 0);
+error_reporting(E_ALL);
 
 /*
-|--------------------------------------------------------------------------
-| PRODUCTION CONFIGURATION
-|--------------------------------------------------------------------------
-| In production, set environment variables or create /etc/rmc/config.php.
-| Locally the defaults below keep XAMPP working without extra setup.
-|
-| Environment variables (checked first):
-|   RMC_DB_HOST, RMC_DB_PORT, RMC_DB_NAME, RMC_DB_USER, RMC_DB_PASS
-|   RMC_HMAC_KEY
-|--------------------------------------------------------------------------
-*/
+ |--------------------------------------------------------------------------
+ | AUTO-DETECT ENVIRONMENT (Local XAMPP vs InfinityFree live hosting)
+ |--------------------------------------------------------------------------
+ | This checks the domain name the site is being visited from. If it's
+ | your live InfinityFree domain, it uses the live database credentials.
+ | Otherwise (localhost, 127.0.0.1, etc.) it falls back to your local
+ | XAMPP database settings. No manual switching needed.
+ |--------------------------------------------------------------------------
+ */
 
 if (!function_exists('rmc_config')) {
 
 function rmc_config()
 {
-    $defaults = [
-        'db_host'   => '127.0.0.1',
-        'db_port'   => '5432',
-        'db_name'   => 'campus_event_db',
-        'db_user'   => 'postgres',
-        'db_pass'   => 'Jhoncarl@01172002',
-        'hmac_key'  => '3c67c9d914541b8cfe8a870e773fc911b13b2bb96c386056e9048f131c74c8a8',
-    ];
+    $host_header = $_SERVER['HTTP_HOST'] ?? '';
 
-    $paths = [
-        '/etc/rmc/config.php',
-        dirname(__DIR__) . '/rmc_config.php',
-        'C:/xampp/rmc_config.php',
-    ];
+    $is_live = (strpos($host_header, 'infinityfreeapp.com') !== false)
+        || (strpos($host_header, 'baculinao') !== false);
+
+    if ($is_live) {
+        // ---- LIVE HOSTING ----
+        // Live credentials and signing keys must come from environment variables.
+        $defaults = [
+            'db_host'   => '',
+            'db_port'   => '3306',
+            'db_name'   => '',
+            'db_user'   => '',
+            'db_pass'   => '',
+            'hmac_key'  => '',
+        ];
+    } else {
+        // ---- LOCAL (XAMPP) DATABASE ----
+        $defaults = [
+            'db_host'   => 'localhost',
+            'db_port'   => '3306',
+            'db_name'   => 'campus_event_db',
+            'db_user'   => 'root',
+            'db_pass'   => '',
+            'hmac_key'  => '',
+        ];
+    }
 
     $env_map = [
         'db_host'  => 'RMC_DB_HOST',
@@ -43,12 +68,20 @@ function rmc_config()
 
     $config = $defaults;
 
-    foreach ($paths as $path) {
-        if (is_file($path)) {
-            $loaded = @include $path;
-            if (is_array($loaded)) {
-                $config = array_merge($config, $loaded);
-                break;
+    // Optional per-installation config file, used ONLY on live hosting.
+    // This lets one codebase be deployed to both XAMPP (local defaults)
+    // and InfinityFree (config.local.php credentials) without editing
+    // anything by hand on either side.
+    if ($is_live) {
+        $local_config_file = __DIR__ . '/config.local.php';
+        if (is_file($local_config_file)) {
+            $local_config = require $local_config_file;
+            if (is_array($local_config)) {
+                foreach ($env_map as $key => $env) {
+                    if (isset($local_config[$key]) && is_string($local_config[$key]) && $local_config[$key] !== '') {
+                        $config[$key] = $local_config[$key];
+                    }
+                }
             }
         }
     }
@@ -58,6 +91,20 @@ function rmc_config()
         if (is_string($val) && $val !== '') {
             $config[$key] = $val;
         }
+    }
+
+    if ($is_live) {
+        foreach (['db_host', 'db_name', 'db_user', 'hmac_key'] as $required_key) {
+            if ($config[$required_key] === '') {
+                error_log('RMC live configuration is incomplete: missing ' . $required_key);
+                die('Something went wrong. Please try again later.');
+            }
+        }
+    }
+
+    if ($config['hmac_key'] === '') {
+        // Generate a stable development-only key when local config has none.
+        $config['hmac_key'] = hash('sha256', 'RMC-local-development-key-' . php_uname('n'));
     }
 
     return $config;
@@ -83,13 +130,30 @@ if (!defined('QR_HMAC_KEY')) {
     define('QR_HMAC_KEY', $__rmc_cfg['hmac_key']);
 }
 
-$conn_string = "host=$host port=$port dbname=$dbname user=$user password=$password";
-$conn = @pg_connect($conn_string);
+/*
+|--------------------------------------------------------------------------
+| DATABASE CONNECTION - PDO MySQL
+|--------------------------------------------------------------------------
+*/
 
-if (!$conn) {
-    error_log("Database connection failed: " . pg_last_error());
+$dsn = "mysql:host=$host;port=$port;dbname=$dbname;charset=utf8mb4";
+
+$options = [
+    PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
+    PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+    PDO::ATTR_EMULATE_PREPARES   => false,
+    PDO::MYSQL_ATTR_INIT_COMMAND => "SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci",
+];
+
+try {
+    $pdo = new PDO($dsn, $user, $password, $options);
+} catch (PDOException $e) {
+    error_log("Database connection failed: " . $e->getMessage());
     die("Something went wrong. Please try again later.");
 }
+
+// Keep $conn for backward compatibility (some code might check it)
+$conn = $pdo;
 
 /*
 |--------------------------------------------------------------------------
@@ -148,66 +212,62 @@ if (session_status() === PHP_SESSION_NONE) {
 
 if (!function_exists('rmc_rate_is_blocked')) {
 
-    function rmc_rate_ensure_table($conn)
+    function rmc_rate_ensure_table($pdo)
     {
         static $done = false;
         if ($done) return;
-        @pg_query($conn, "
+        $pdo->exec("
             CREATE TABLE IF NOT EXISTS rate_limits (
-                id SERIAL PRIMARY KEY,
+                id INT UNSIGNED NOT NULL AUTO_INCREMENT,
                 rate_key VARCHAR(255) NOT NULL,
-                attempt_time TIMESTAMP DEFAULT NOW()
-            )
+                attempt_time DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+                PRIMARY KEY (id),
+                KEY idx_rate_key (rate_key),
+                KEY idx_attempt_time (attempt_time)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         ");
-        @pg_query($conn, "CREATE INDEX IF NOT EXISTS idx_rate_key ON rate_limits(rate_key)");
         $done = true;
     }
 
-    function rmc_rate_is_blocked($conn, $key, $max_attempts, $window_seconds)
+    function rmc_rate_is_blocked($pdo, $key, $max_attempts, $window_seconds)
     {
-        rmc_rate_ensure_table($conn);
-        @pg_query($conn, "DELETE FROM rate_limits WHERE attempt_time < NOW() - INTERVAL '" . (int) $window_seconds . " seconds'");
+        rmc_rate_ensure_table($pdo);
+        $pdo->exec("DELETE FROM rate_limits WHERE attempt_time < NOW() - INTERVAL " . (int) $window_seconds . " SECOND");
 
-        $res = pg_query_params(
-            $conn,
-            "SELECT COUNT(*) AS cnt FROM rate_limits WHERE rate_key = $1 AND attempt_time > NOW() - INTERVAL '" . (int) $window_seconds . " seconds'",
-            [$key]
+        $stmt = $pdo->prepare(
+            "SELECT COUNT(*) AS cnt FROM rate_limits WHERE rate_key = ? AND attempt_time > NOW() - INTERVAL ? SECOND"
         );
-
-        $cnt = $res ? (int) pg_fetch_result($res, 0, 'cnt') : 0;
+        $stmt->execute([$key, $window_seconds]);
+        $cnt = (int) $stmt->fetchColumn();
         return $cnt >= $max_attempts;
     }
 
-    function rmc_rate_record_fail($conn, $key, $window_seconds = 900)
+    function rmc_rate_record_fail($pdo, $key, $window_seconds = 900)
     {
-        rmc_rate_ensure_table($conn);
-        pg_query_params(
-            $conn,
-            "INSERT INTO rate_limits (rate_key, attempt_time) VALUES ($1, NOW())",
-            [$key]
+        rmc_rate_ensure_table($pdo);
+        $stmt = $pdo->prepare(
+            "INSERT INTO rate_limits (rate_key, attempt_time) VALUES (?, NOW())"
         );
+        $stmt->execute([$key]);
     }
 
-    function rmc_rate_clear($conn, $key)
+    function rmc_rate_clear($pdo, $key)
     {
-        rmc_rate_ensure_table($conn);
-        pg_query_params(
-            $conn,
-            "DELETE FROM rate_limits WHERE rate_key = $1",
-            [$key]
+        rmc_rate_ensure_table($pdo);
+        $stmt = $pdo->prepare(
+            "DELETE FROM rate_limits WHERE rate_key = ?"
         );
+        $stmt->execute([$key]);
     }
 
-    function rmc_rate_remaining($conn, $key, $window_seconds)
+    function rmc_rate_remaining($pdo, $key, $window_seconds)
     {
-        rmc_rate_ensure_table($conn);
-        $res = pg_query_params(
-            $conn,
-            "SELECT EXTRACT(EPOCH FROM (MAX(attempt_time) + INTERVAL '" . (int) $window_seconds . " seconds' - NOW()))::int AS secs_left FROM rate_limits WHERE rate_key = $1",
-            [$key]
+        rmc_rate_ensure_table($pdo);
+        $stmt = $pdo->prepare(
+            "SELECT TIMESTAMPDIFF(SECOND, NOW(), MAX(attempt_time) + INTERVAL ? SECOND) AS secs_left FROM rate_limits WHERE rate_key = ?"
         );
-        if (!$res || pg_num_rows($res) === 0) return 0;
-        $secs = (int) pg_fetch_result($res, 0, 'secs_left');
+        $stmt->execute([$window_seconds, $key]);
+        $secs = (int) $stmt->fetchColumn();
         return max(0, $secs);
     }
 
@@ -215,72 +275,233 @@ if (!function_exists('rmc_rate_is_blocked')) {
 
 /*
 |--------------------------------------------------------------------------
-| SINGLE-DEVICE LOGIN ENFORCEMENT
+| PER-ROLE INDEPENDENT SESSIONS
+|--------------------------------------------------------------------------
+| Auth data is stored per role under $_SESSION['rmc_auth'][ROLE]. Each
+| browser tab keeps its own role in sessionStorage and mirrors it into the
+| rmc_tab_role cookie; login redirects carry ?rmc_role=. The matching
+| role's data is hydrated into the legacy flat $_SESSION keys so every
+| existing page continues to work unchanged.
+|--------------------------------------------------------------------------
+*/
+
+if (!function_exists('rmc_active_role')) {
+
+    function rmc_allowed_roles()
+    {
+        return array('student', 'organizer', 'admin');
+    }
+
+    function rmc_detect_requested_role()
+    {
+        $candidates = array(
+            $_GET['rmc_role'] ?? null,
+            $_POST['rmc_role'] ?? null,
+            $_COOKIE['rmc_tab_role'] ?? null,
+        );
+
+        foreach ($candidates as $candidate) {
+            if (
+                is_string($candidate) &&
+                in_array($candidate, rmc_allowed_roles(), true)
+            ) {
+                return $candidate;
+            }
+        }
+
+        return null;
+    }
+
+    function rmc_hydrate_role_session()
+    {
+        if (session_status() !== PHP_SESSION_ACTIVE) {
+            return;
+        }
+
+        $role = rmc_detect_requested_role();
+
+        if (
+            $role === null &&
+            isset($_SESSION['active_role']) &&
+            in_array($_SESSION['active_role'], rmc_allowed_roles(), true)
+        ) {
+            $role = $_SESSION['active_role'];
+        }
+
+        if (
+            $role !== null &&
+            isset($_SESSION['rmc_auth'][$role]) &&
+            is_array($_SESSION['rmc_auth'][$role]) &&
+            !empty($_SESSION['rmc_auth'][$role]['user_id'])
+        ) {
+            foreach ($_SESSION['rmc_auth'][$role] as $key => $value) {
+                $_SESSION[$key] = $value;
+            }
+            $_SESSION['active_role'] = $role;
+
+            if (!isset($_COOKIE['rmc_tab_role']) || $_COOKIE['rmc_tab_role'] !== $role) {
+                setcookie('rmc_tab_role', $role, [
+                    'expires'  => 0,
+                    'path'     => '/',
+                    'samesite' => 'Lax',
+                ]);
+            }
+        }
+    }
+
+}
+
+/*
+|--------------------------------------------------------------------------
+| SINGLE-DEVICE LOGIN ENFORCEMENT (per active role)
 |--------------------------------------------------------------------------
 */
 
 if (!function_exists('rmc_enforce_session_token')) {
 
-    function rmc_enforce_session_token($conn)
+    function rmc_enforce_session_token($pdo)
     {
         if (
             session_status() !== PHP_SESSION_ACTIVE ||
             empty($_SESSION['user_id']) ||
-            empty($_SESSION['role']) ||
-            empty($_SESSION['auth_token'])
+            empty($_SESSION['role'])
         ) {
             return;
         }
 
-        $res = pg_query_params(
-            $conn,
-            "SELECT session_token
-             FROM users
-             WHERE user_id = $1
-               AND role = $2
-               AND status = 'active'
-             LIMIT 1",
-            array(
-                (int) $_SESSION['user_id'],
-                $_SESSION['role']
-            )
-        );
+        $role = (string) $_SESSION['role'];
+        $role_auth = $_SESSION['rmc_auth'][$role] ?? null;
+        $auth_token = is_array($role_auth) ? ($role_auth['auth_token'] ?? '') : '';
 
-        if (!$res) {
+        if ($auth_token === '') {
+            $auth_token = (string) ($_SESSION['auth_token'] ?? '');
+        }
+        if ($auth_token === '') {
             return;
         }
 
-        $row = pg_fetch_assoc($res);
+        $stmt = $pdo->prepare(
+            "SELECT session_token
+             FROM users
+             WHERE user_id = ?
+               AND role = ?
+               AND status = 'active'
+             LIMIT 1"
+        );
+        $stmt->execute([
+            (int) $_SESSION['user_id'],
+            $role
+        ]);
+
+        $row = $stmt->fetch();
+
+        if (!$row) {
+            rmc_destroy_role_session();
+        }
 
         $expected = $row['session_token'] ?? null;
 
         if ($expected === null || $expected === '') {
-            $_SESSION = array();
-            header("Location: login.php");
-            exit();
+            rmc_destroy_role_session();
         }
 
-        $provided = hash('sha256', (string) $_SESSION['auth_token']);
+        $provided = hash('sha256', $auth_token);
 
-        if (!hash_equals($expected, $provided)) {
-            $_SESSION = array();
-            header("Location: login.php");
-            exit();
+        if (isset($expected) && $expected !== '' && !hash_equals($expected, $provided)) {
+            rmc_destroy_role_session();
         }
 
         /*
-        | Session idle timeout: 30 minutes of inactivity
+        | Session idle timeout: 30 minutes of inactivity (tracked per role)
         */
         $last_activity = $_SESSION['last_activity'] ?? 0;
         if (time() - $last_activity > 1800) {
-            $_SESSION = array();
-            header("Location: login.php?timeout=1");
-            exit();
+            rmc_destroy_role_session(true);
         }
         $_SESSION['last_activity'] = time();
+
+        if (
+            isset($_SESSION['rmc_auth'][$role]) &&
+            is_array($_SESSION['rmc_auth'][$role])
+        ) {
+            $_SESSION['rmc_auth'][$role]['last_activity'] = time();
+            $_SESSION['rmc_auth'][$role]['auth_token'] = $auth_token;
+        }
     }
 
 }
 
-rmc_enforce_session_token($conn);
-?>
+if (!function_exists('rmc_destroy_role_session')) {
+
+    function rmc_destroy_role_session($timeout = false)
+    {
+        $role = $_SESSION['role'] ?? ($_SESSION['active_role'] ?? null);
+
+        if (
+            $role !== null &&
+            isset($_SESSION['rmc_auth'][$role])
+        ) {
+            unset($_SESSION['rmc_auth'][$role]);
+        }
+
+        foreach (array('user_id', 'role', 'full_name', 'auth_token', 'last_activity', 'login_time') as $key) {
+            unset($_SESSION[$key]);
+        }
+
+        if (!empty($_SESSION['rmc_auth']) && count($_SESSION['rmc_auth']) > 0) {
+            header("Location: login.php" . ($timeout ? "?timeout=1" : ""));
+            exit();
+        }
+
+        $_SESSION = array();
+        header("Location: login.php" . ($timeout ? "?timeout=1" : ""));
+        exit();
+    }
+
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| SHARED APPLICATION HELPERS
+|--------------------------------------------------------------------------
+*/
+if (!function_exists('rmc_is_role_allowed')) {
+    function rmc_is_role_allowed($conn, $role) {
+        if ($role === 'admin') return true;
+        $key = $role . '_access';
+        $res = $conn->prepare("SELECT setting_value FROM system_settings WHERE setting_key = ?");
+        $res->execute([$key]);
+        $row = $res->fetch(PDO::FETCH_NUM);
+        if ($row !== false) {
+            return ((string) $row[0] === '1');
+        }
+        return true;
+    }
+}
+
+if (!function_exists('status_badge')) {
+    function status_badge($status) {
+        switch (strtolower((string)$status)) {
+            case 'sent':
+            case 'approved':
+            case 'active':
+                return 'bg-emerald-100 text-emerald-700';
+            case 'archived':
+                return 'bg-slate-100 text-slate-700';
+            case 'rejected':
+            case 'failed':
+            case 'deleted':
+                return 'bg-red-100 text-red-700';
+            case 'cancelled':
+            case 'pending':
+                return 'bg-amber-100 text-amber-700';
+            default:
+                return 'bg-slate-100 text-slate-700';
+        }
+    }
+}
+
+rmc_hydrate_role_session();
+rmc_enforce_session_token($pdo);
+

@@ -135,6 +135,7 @@ $translations = [
         'placeholder_registered_email' => 'Enter your registered email',
         'send_reset_link' => 'Send Reset Link',
         'back_to_login' => '← Back to Login',
+        'back_to_home' => '← Back to Home',
         'create_new_password' => 'Create New Password',
         'reset_desc' => 'Choose a strong password for your account.',
         'show_password' => 'Show Password',
@@ -195,6 +196,7 @@ $translations = [
         'username' => 'Username',
         'email_notifications' => 'Email Notifications',
         'email_notifications_desc' => 'Receive email alerts for registrations, approvals, and reminders.',
+        'confirm_disable_email_notifications' => 'Turn off email notifications? You will stop receiving emails for registrations, approvals, and event reminders.',
         'lang_english' => 'English',
         'lang_filipino' => 'Filipino',
         'lang_spanish' => 'Español',
@@ -363,6 +365,7 @@ $translations = [
         'camera_scanner' => 'Camera Scanner',
         'camera_scanner_desc' => 'Scan QR Code using webcam or device camera.',
         'camera_hint' => "Point the camera at the student's QR Code.",
+        'start_scanning' => 'Start Scanning',
         'manual_entry_desc' => 'Enter the QR value manually.',
         'qr_code_value' => 'QR Code Value',
         'paste_qr_placeholder' => 'Paste QR Code Here',
@@ -903,6 +906,8 @@ $translations = [
         'username' => 'Username',
         'email_notifications' => 'Mga Abiso sa Email',
         'email_notifications_desc' => 'Makatanggap ng mga alerto sa email para sa mga rehistrasyon, pag-apruba, at mga paalala.',
+                'back_to_home' => '← Bumalik sa Home',
+'confirm_disable_email_notifications' => 'I-off ang mga abiso sa email? Hindi ka na makakatanggap ng email para sa mga rehistrasyon, pag-apruba, at paalala ng event.',
         'lang_english' => 'English',
         'lang_filipino' => 'Filipino',
         'lang_spanish' => 'Español',
@@ -1071,6 +1076,7 @@ $translations = [
         'camera_scanner' => 'Camera Scanner',
         'camera_scanner_desc' => 'I-scan ang QR Code gamit ang webcam o camera ng device.',
         'camera_hint' => "Ituro ang camera sa QR Code ng estudyante.",
+        'start_scanning' => 'Magsimula ng Pag-scan',
         'manual_entry_desc' => 'Ilagay ang QR value nang manu-mano.',
         'qr_code_value' => 'QR Code Value',
         'paste_qr_placeholder' => 'I-paste ang QR Code Dito',
@@ -1430,6 +1436,8 @@ $translations = [
     ],
 
     'es' => [
+        'back_to_home' => '← Volver al inicio',
+        'confirm_disable_email_notifications' => '¿Desactivar las notificaciones por correo electrónico? Dejarás de recibir correos sobre registros, aprobaciones y recordatorios de eventos.',
         // Page titles
         'title_login' => 'Iniciar Sesión — RMC Events',
         'title_signup' => 'Registrarse — RMC Events',
@@ -1779,6 +1787,7 @@ $translations = [
         'camera_scanner' => 'Escáner de Cámara',
         'camera_scanner_desc' => 'Escanee el Código QR con la cámara web o la cámara del dispositivo.',
         'camera_hint' => 'Apunta la cámara al Código QR del estudiante.',
+        'start_scanning' => 'Iniciar Escaneo',
         'manual_entry_desc' => 'Ingresa el valor del QR manualmente.',
         'qr_code_value' => 'Valor del Código QR',
         'paste_qr_placeholder' => 'Pegar Código QR Aquí',
@@ -2126,6 +2135,8 @@ $translations = [
     ],
 
     'fr' => [
+        'back_to_home' => '← Retour à l\'accueil',
+        'confirm_disable_email_notifications' => 'Désactiver les notifications par e-mail ? Vous ne recevrez plus d’e-mails concernant les inscriptions, approbations et rappels d’événements.',
         // Page titles
         'title_login' => 'Connexion — RMC Events',
         'title_signup' => 'Inscription — RMC Events',
@@ -2475,6 +2486,7 @@ $translations = [
         'camera_scanner' => 'Scanner de caméra',
         'camera_scanner_desc' => 'Scannez le code QR avec la webcam ou la caméra de l\'appareil.',
         'camera_hint' => 'Pointez la caméra vers le code QR de l\'étudiant.',
+        'start_scanning' => 'Démarrer le Balayage',
         'manual_entry_desc' => 'Saisissez la valeur du QR manuellement.',
         'qr_code_value' => 'Valeur du code QR',
         'paste_qr_placeholder' => 'Coller le code QR ici',
@@ -2822,6 +2834,8 @@ $translations = [
     ],
 
     'ja' => [
+        'back_to_home' => '← ホームに戻る',
+        'confirm_disable_email_notifications' => 'メール通知をオフにしますか？ 登録、承認、イベントリマインダーのメールを受け取らなくなります。',
         // Page titles
         'title_login' => 'ログイン — RMC Events',
         'title_signup' => '新規登録 — RMC Events',
@@ -3171,6 +3185,7 @@ $translations = [
         'camera_scanner' => 'カメラスキャナー',
         'camera_scanner_desc' => 'WebカメラまたはデバイスのカメラでQRコードをスキャンします。',
         'camera_hint' => 'カメラを学生のQRコードに向けます。',
+        'start_scanning' => 'スキャン開始',
         'manual_entry_desc' => 'QR値を手動で入力します。',
         'qr_code_value' => 'QRコードの値',
         'paste_qr_placeholder' => 'ここにQRコードを貼り付け',
@@ -3518,6 +3533,8 @@ $translations = [
     ],
 
     'ko' => [
+        'back_to_home' => '← 홈으로 돌아가기',
+        'confirm_disable_email_notifications' => '이메일 알림을 끄시겠습니까? 등록, 승인 및 이벤트 알림 이메일을 받지 않게 됩니다.',
         // Page titles
         'title_login' => '로그인 — RMC Events',
         'title_signup' => '회원가입 — RMC Events',
@@ -3867,6 +3884,7 @@ $translations = [
         'camera_scanner' => '카메라 스캐너',
         'camera_scanner_desc' => '웹캠 또는 기기 카메라로 QR 코드를 스캔하세요.',
         'camera_hint' => '카메라를 학생의 QR 코드에 맞추세요.',
+        'start_scanning' => '스캔 시작',
         'manual_entry_desc' => 'QR 값을 수동으로 입력하세요.',
         'qr_code_value' => 'QR 코드 값',
         'paste_qr_placeholder' => '여기에 QR 코드 붙여넣기',
@@ -4214,6 +4232,8 @@ $translations = [
     ],
 
     'zh' => [
+        'back_to_home' => '← 返回首页',
+        'confirm_disable_email_notifications' => '关闭电子邮件通知？您将不再收到报名、审批和活动提醒邮件。',
         // Page titles
         'title_login' => '登录 — RMC Events',
         'title_signup' => '注册 — RMC Events',
@@ -4563,6 +4583,7 @@ $translations = [
         'camera_scanner' => '摄像头扫描器',
         'camera_scanner_desc' => '使用网络摄像头或设备摄像头扫描二维码。',
         'camera_hint' => '将摄像头对准学生的二维码。',
+        'start_scanning' => '开始扫描',
         'manual_entry_desc' => '手动输入二维码的值。',
         'qr_code_value' => '二维码值',
         'paste_qr_placeholder' => '在此粘贴二维码',

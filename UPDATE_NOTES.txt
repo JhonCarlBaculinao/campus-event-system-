@@ -1,0 +1,31 @@
+RMC EVENTS — UPDATED SYSTEM
+
+UI
+- Kept the existing landing page and login/account page design intact.
+- Reworked ONLY the landing-page Gallery section into a centered carousel with a large active image, left/right preview images, arrows, dots, auto-rotation, hover pause, and reduced-motion support.
+- Applied a clean, comfortable, fresh light internal-app treatment to authenticated dashboards/pages: white sidebar, soft ivory background, restrained RMC maroon accents, cleaner cards/forms, softer shadows, and subtle motion. The public landing/login pages are excluded from this internal theme.
+
+BUGS / SECURITY
+- Fixed the corrupted login_2fa.php user query.
+- Fixed admin Manage Admins search query.
+- Fixed Create Admin SQL injection / duplicate INSERT and restored department storage.
+- Fixed malformed admin status/unlock notification and audit statements.
+- Fixed admin email settings role filtering for MySQL PDO and parameter execution.
+- Fixed admin email logs search parameter binding.
+- Removed live DB credentials and QR HMAC key from source; live configuration now uses environment variables or a private config.local.php.
+- Removed fatal-error/debug output from dashboard.php and account.php.
+- Removed public debug.log and added root .htaccess protection for logs/config/source artifacts.
+- Switched manage_photos.php to server-side MIME sniffing with finfo and image validation.
+- Removed explicit display_errors=1 re-enabling from application support files.
+- Removed the unused PostgreSQL compatibility shim db_pdo_compat.php.
+- Centralized rmc_is_role_allowed() and status_badge() helpers in db_connect.php.
+- Removed the empty update_student_pass.php file.
+- Removed duplicate landing-image folder; the active copies remain under img/.
+- Made BASE_URL deployment-safe for local subfolder and domain-root hosting.
+- Corrected the malformed Font Awesome stylesheet tag in partials/head.php.
+
+NOTE
+- The source snapshot did not contain a toggle_favorite.php file or any favorite-toggle handler, so there was no existing handler to patch for event-status validation.
+- Because the previous source contained exposed live credentials and a shared QR signing key, rotate the live DB password and QR HMAC key before public deployment.
+
+- Additional deep-pass fixes: robust SELECT existence checks, inactive-account session invalidation, password-reset session invalidation, cancelled-registration re-registration behavior, verified-attendance feedback gating, filtered registration analytics, and organizer export ownership checks.

@@ -1,0 +1,12 @@
+<?php
+// Copy to a private location and set RMC_SMTP_CONFIG to that path.
+// Do not commit this file with real credentials.
+return [
+    'host'       => 'smtp.gmail.com',
+    'port'       => 587,
+    'encryption' => 'tls',
+    'username'   => 'YOUR_SMTP_USERNAME',
+    'password'   => 'YOUR_SMTP_APP_PASSWORD',
+    'from_email' => 'YOUR_FROM_EMAIL',
+    'from_name'  => 'Regis Marie College Event System',
+];

@@ -1,5 +1,4 @@
 <?php
-session_start();
 
 include 'db_connect.php';
 require 'csrf.php';
@@ -30,16 +29,13 @@ $pending_user_id = (int)$_SESSION['pending_2fa_user_id'];
 /*
 | Re-read the user so the TOTP secret is never stored in the session.
 */
-$result = pg_query_params(
-    $conn,
-    "SELECT user_id, full_name, role, status, appearance, twofa_secret
+$result = $pdo->prepare("SELECT user_id, full_name, role, status, appearance, twofa_secret
      FROM users
-     WHERE user_id = $1
-     LIMIT 1",
-    [$pending_user_id]
-);
+     WHERE user_id = ?
+     LIMIT 1");
+$result->execute([$pending_user_id]);
 
-$pending_user = $result ? pg_fetch_assoc($result) : null;
+$pending_user = $result->fetch(PDO::FETCH_ASSOC);
 
 /*
 | The account must still exist, be active, and actually have 2FA enabled.
@@ -128,21 +124,27 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
 
         $session_token = bin2hex(random_bytes(32));
 
-        pg_query_params(
-            $conn,
-            "UPDATE users
-             SET session_token = $1
-             WHERE user_id = $2",
-            array(
+        $pdo->prepare("UPDATE users
+             SET session_token = ?
+             WHERE user_id = ?")->execute(array(
                 hash('sha256', $session_token),
                 (int) $pending_user['user_id']
-            )
-        );
+            ));
 
         $_SESSION['user_id']    = (int)$pending_user['user_id'];
         $_SESSION['role']       = $pending_user['role'];
         $_SESSION['full_name']  = $pending_user['full_name'];
         $_SESSION['auth_token'] = $session_token;
+
+        $_SESSION['rmc_auth'][$pending_user['role']] = [
+            'user_id'       => (int)$pending_user['user_id'],
+            'role'          => $pending_user['role'],
+            'full_name'     => $pending_user['full_name'],
+            'auth_token'    => $session_token,
+            'login_time'    => time(),
+            'last_activity' => time(),
+        ];
+        $_SESSION['active_role'] = $pending_user['role'];
 
         $login_appearance =
             (isset($pending_user['appearance']) &&
@@ -163,8 +165,15 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
         );
 
         $_SESSION['login_time'] = time();
+        $_SESSION['last_activity'] = time();
 
-        header("Location: dashboard.php");
+        setcookie('rmc_tab_role', $pending_user['role'], [
+            'expires'  => 0,
+            'path'     => '/',
+            'samesite' => 'Lax',
+        ]);
+
+        header("Location: dashboard.php?rmc_role=" . urlencode($pending_user['role']));
         exit();
 
     } else {
@@ -303,7 +312,7 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
         <div class="text-center mt-8">
 
             <a
-                href="login.php"
+                    href="login.php"
                 class="text-sm font-semibold text-rmc-800 hover:text-rmc-900"
             >
                 <?= t('twofa_back_to_login'); ?>

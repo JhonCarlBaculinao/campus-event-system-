@@ -1,0 +1,48 @@
+RMC EVENTS — DEEP AUDIT & FIX REPORT
+Date: 2026-09-18
+Purpose: Thesis presentation build
+
+STATIC SCOPE
+- 171 total project files after cleanup/fixes
+- 69 PHP files
+- All 69 PHP files pass `php -l`
+- 7/7 language dictionaries have matching key sets
+- Application POST handlers were checked for CSRF; all application POST handlers now call csrf_verify().
+- No SQL dump/schema file was included in this ZIP, so live-schema-dependent behavior could not be executed against the actual database from this package alone.
+
+CONFIRMED FIXES APPLIED
+1. Fixed role-specific session-token enforcement so the active role's token is authoritative.
+2. Synchronized role-specific auth_token after password and 2FA token rotation.
+3. Inactive/deactivated accounts now terminate their active role session.
+4. Fixed organizer event editing: UPDATE statement is now executed.
+5. Fixed edit_event using $event before it was fetched.
+6. Standardized newly uploaded event images to img/ with filename-only DB storage.
+7. Added compatibility handling for legacy event image paths in gallery/photo management.
+8. Fixed admin system-settings toggle by actually executing the UPDATE.
+9. Fixed admin-settings notification variable usage.
+10. Fixed broken notification-count query patterns in edit_event/admin_settings/edit_user.
+11. Fixed dashboard organizer/admin attendance calculations to use verified attendance records.
+12. Fixed reports event-level attendance to join the real attendance table.
+13. Fixed reports overall attendance to respect organizer/category/year/department filters.
+14. Excluded cancelled registrations from active registration analytics.
+15. Fixed organizer event cancellation so associated registered records are marked cancelled.
+16. Added CSRF verification to ajax_mark_read.php.
+17. Fixed organizer export ownership checks to avoid relying on SELECT rowCount().
+18. Fixed several SELECT existence checks that relied on PDO SELECT rowCount().
+19. Password reset now invalidates the previous session token.
+20. Forced password update now rotates and synchronizes the session token.
+21. Admin-edited accounts have their existing session token invalidated; the current admin session is reissued when editing itself.
+22. Deactivation flows invalidate the affected account session token.
+23. Destructive reset and demo seeding scripts are CLI-only and cannot be triggered by a public browser request.
+24. Email queue processing now atomically claims pending rows, preventing two workers from sending the same queue item concurrently.
+25. Completed missing translation keys across all seven supported languages.
+
+PRESENTATION-RELEVANT NOTES
+- Dummy credentials supplied in the presentation ZIP were intentionally left in place per project-owner instruction.
+- No time/timezone issue was counted as a defect in this audit.
+- Live database behavior, email delivery, QR camera scanning, and browser-specific UI behavior still require an actual runtime test against the intended MySQL database and hosting environment.
+
+RECOMMENDED FINAL SMOKE TEST
+Student: sign up -> email verification -> login -> browse/register -> My QR.
+Organizer: sign up -> admin approval -> login -> create event -> edit event -> manage photos -> scan attendance -> reports/export.
+Admin: login/2FA -> approve organizer -> approve event -> manage users -> toggle settings -> reports -> email logs.

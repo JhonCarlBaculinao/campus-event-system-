@@ -1,0 +1,30 @@
+RMC EVENTS - CONFIGURATION NOTES
+
+1. LOCAL XAMPP
+   No extra configuration is required for the default local database:
+   host=localhost, port=3306, database=campus_event_db, user=root, empty password.
+
+2. LIVE HOSTING / INFINITYFREE
+   Do NOT put live credentials directly into db_connect.php.
+   Copy:
+       config.local.php.example
+   to:
+       config.local.php
+   Then replace the placeholders with the live database values and a long random QR HMAC key.
+
+   The root .htaccess blocks direct browser access to config*.php and .env files.
+
+3. ENVIRONMENT VARIABLES (OPTIONAL)
+   The application also accepts:
+       RMC_DB_HOST
+       RMC_DB_PORT
+       RMC_DB_NAME
+       RMC_DB_USER
+       RMC_DB_PASS
+       RMC_HMAC_KEY
+
+4. IMPORTANT SECURITY NOTE
+   The previous source snapshot contained live credentials and a shared QR signing key.
+   Those values were removed from the source code. Because the old credentials were exposed
+   in the previous source, rotate the live database password and QR signing key before using
+   the system publicly.

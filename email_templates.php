@@ -1,25 +1,19 @@
 <?php
+        if (session_status() === PHP_SESSION_NONE) {
+            session_start();
+        }
 
 /*
 |--------------------------------------------------------------------------
 | RMC EMAIL TEMPLATES  (single source of truth)
 |--------------------------------------------------------------------------
-| Reusable RMC-branded email templates. All emails sent through the
-| system are wrapped in the maroon RMC Events header/footer by
-| send_email.php unless they already carry the <!-- RMC_BRANDED --> marker.
-|--------------------------------------------------------------------------
 */
 
-define('RMC_EMAIL_MAROON', '#7a0c0c');
+define('RMC_EMAIL_NAVY', '#1E3A5F');
+define('RMC_EMAIL_NAVY_DARK', '#0B1F3A');
 
 define('RMC_BRANDED_MARKER', '<!-- RMC_BRANDED -->');
 
-
-/*
-|--------------------------------------------------------------------------
-| Branded wrapper (header + footer)
-|--------------------------------------------------------------------------
-*/
 
 function rmc_email_wrapper($inner_html)
 {
@@ -35,7 +29,7 @@ function rmc_email_wrapper($inner_html)
                         <table width="600" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:14px;overflow:hidden;box-shadow:0 2px 14px rgba(0,0,0,0.08);max-width:600px;width:100%;">
 
                             <tr>
-                                <td style="background:' . RMC_EMAIL_MAROON . ';padding:26px 32px;">
+                                <td style="background:linear-gradient(135deg,' . RMC_EMAIL_NAVY . ',' . RMC_EMAIL_NAVY_DARK . ');padding:26px 32px;">
 
                                     <div style="font-family:Arial,sans-serif;color:#ffffff;">
                                         <div style="font-size:22px;font-weight:bold;letter-spacing:0.5px;">
@@ -84,19 +78,13 @@ function rmc_email_wrapper($inner_html)
 }
 
 
-/*
-|--------------------------------------------------------------------------
-| Email verification (sign-up)
-|--------------------------------------------------------------------------
-*/
-
 function build_verification_email_html($name, $code)
 {
     $safe_name = htmlspecialchars($name, ENT_QUOTES, 'UTF-8');
     $safe_code = htmlspecialchars($code, ENT_QUOTES, 'UTF-8');
 
     $inner = '
-        <h2 style="color:' . RMC_EMAIL_MAROON . ';margin-top:0;">
+        <h2 style="color:' . RMC_EMAIL_NAVY . ';margin-top:0;">
             Verify Your Email
         </h2>
 
@@ -115,7 +103,7 @@ function build_verification_email_html($name, $code)
         </p>
 
         <div style="background:#f1f5f9;border-radius:12px;padding:20px;text-align:center;margin:25px 0;">
-            <span style="font-size:32px;font-weight:bold;letter-spacing:8px;color:' . RMC_EMAIL_MAROON . ';">
+            <span style="font-size:32px;font-weight:bold;letter-spacing:8px;color:' . RMC_EMAIL_NAVY . ';">
                 ' . $safe_code . '
             </span>
         </div>
@@ -134,18 +122,12 @@ function build_verification_email_html($name, $code)
 }
 
 
-/*
-|--------------------------------------------------------------------------
-| Welcome (after successful verification)
-|--------------------------------------------------------------------------
-*/
-
 function build_welcome_email_html($name)
 {
     $safe_name = htmlspecialchars($name, ENT_QUOTES, 'UTF-8');
 
     $inner = '
-        <h2 style="color:' . RMC_EMAIL_MAROON . ';margin-top:0;">
+        <h2 style="color:' . RMC_EMAIL_NAVY . ';margin-top:0;">
             Welcome to Regis Marie College
         </h2>
 
@@ -181,19 +163,13 @@ function build_welcome_email_html($name)
 }
 
 
-/*
-|--------------------------------------------------------------------------
-| Password reset (with button link)
-|--------------------------------------------------------------------------
-*/
-
 function build_password_reset_email_html($name, $reset_url)
 {
     $safe_name = htmlspecialchars($name, ENT_QUOTES, 'UTF-8');
     $safe_url  = htmlspecialchars($reset_url, ENT_QUOTES, 'UTF-8');
 
     $inner = '
-        <h2 style="color:' . RMC_EMAIL_MAROON . ';margin-top:0;">
+        <h2 style="color:' . RMC_EMAIL_NAVY . ';margin-top:0;">
             Password Reset Request
         </h2>
 
@@ -209,12 +185,12 @@ function build_password_reset_email_html($name, $reset_url)
         <p>Click the button below to create a new password:</p>
 
         <p style="margin:25px 0;">
-            <a
-                href="' . $safe_url . '"
+                <a
+                    href="' . $safe_url . '"
                 style="
                     display:inline-block;
                     padding:12px 22px;
-                    background:' . RMC_EMAIL_MAROON . ';
+                    background:' . RMC_EMAIL_NAVY . ';
                     color:#ffffff;
                     text-decoration:none;
                     border-radius:8px;
@@ -238,22 +214,55 @@ function build_password_reset_email_html($name, $reset_url)
 }
 
 
-/*
-|--------------------------------------------------------------------------
-| Generic notification email
-|--------------------------------------------------------------------------
-| $message may contain pre-escaped HTML. Use {FULL_NAME} / {MESSAGE}
-| placeholders when this template is passed to notify_all_users()
-| or notify_role() so it is personalized per recipient.
-|--------------------------------------------------------------------------
-*/
+function build_organizer_approved_email_html($name, $temp_password)
+{
+    $safe_name = htmlspecialchars($name, ENT_QUOTES, 'UTF-8');
+    $safe_pass = htmlspecialchars($temp_password, ENT_QUOTES, 'UTF-8');
+
+    $inner = '
+        <h2 style="color:' . RMC_EMAIL_NAVY . ';margin-top:0;">
+            Your Organizer Account Has Been Approved
+        </h2>
+
+        <p>
+            Hello <strong>' . $safe_name . '</strong>,
+        </p>
+
+        <p>
+            Good news — your organizer application for the
+            Regis Marie College Campus Event System has been approved.
+        </p>
+
+        <p>
+            Use the temporary password below to log in for the first time:
+        </p>
+
+        <div style="background:#f1f5f9;border-radius:12px;padding:20px;text-align:center;margin:25px 0;">
+            <span style="font-size:26px;font-weight:bold;letter-spacing:3px;color:' . RMC_EMAIL_NAVY . ';">
+                ' . $safe_pass . '
+            </span>
+        </div>
+
+        <p>
+            For security, you will be asked to
+            <strong>set a new password</strong> immediately after logging in.
+        </p>
+
+        <p>
+            If you did not apply for an organizer account,
+            please contact the administrator.
+        </p>';
+
+    return rmc_email_wrapper($inner);
+}
+
 
 function build_notification_email_html($full_name, $message, $heading = null)
 {
     $safe_name = htmlspecialchars($full_name, ENT_QUOTES, 'UTF-8');
 
     $heading_html = ($heading !== null && $heading !== '')
-        ? '<h2 style="color:' . RMC_EMAIL_MAROON . ';margin-top:0;">' .
+        ? '<h2 style="color:' . RMC_EMAIL_NAVY . ';margin-top:0;">' .
             htmlspecialchars($heading, ENT_QUOTES, 'UTF-8') .
           '</h2>'
         : '';

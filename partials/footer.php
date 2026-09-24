@@ -59,6 +59,8 @@ function openMobileMenu() {
     if (overlay) {
         overlay.classList.add('open');
     }
+
+    document.body.style.overflow = 'hidden';
 }
 
 
@@ -77,6 +79,8 @@ function closeMobileMenu() {
     if (overlay) {
         overlay.classList.remove('open');
     }
+
+    document.body.style.overflow = '';
 }
 
 
@@ -305,6 +309,98 @@ document.addEventListener(
 
 
 <?php include_once __DIR__ . '/dark_mode.php'; ?>
+
+<script>
+/* =========================================================
+   PER-TAB ROLE BRIDGE — independent multi-role sessions
+   Each tab remembers its own role in sessionStorage and
+   tags navigations so the server activates the matching
+   role's auth data. No visual/behavioral change otherwise.
+   ========================================================= */
+(function() {
+    var serverRole = <?= json_encode($_SESSION['active_role'] ?? ($_SESSION['role'] ?? '')) ?>;
+
+    try {
+        var stored = sessionStorage.getItem('rmc_role');
+
+        if (!stored && serverRole) {
+            stored = serverRole;
+            sessionStorage.setItem('rmc_role', stored);
+        }
+
+        function writeCookie() {
+            if (!stored) return;
+            document.cookie = 'rmc_tab_role=' + encodeURIComponent(stored) +
+                ';path=/;samesite=Lax';
+        }
+
+        writeCookie();
+
+        /* Self-heal: this tab shows another role's content → bounce once */
+        if (
+            serverRole && stored &&
+            serverRole !== stored &&
+            location.pathname.indexOf('login') === -1 &&
+            location.search.indexOf('rmc_role=') === -1
+        ) {
+            writeCookie();
+            var sep = location.search ? '&' : '?';
+            location.replace(location.pathname + location.search + sep + 'rmc_role=' + encodeURIComponent(stored));
+            return;
+        }
+
+        /* Tag link clicks with this tab's role */
+        document.addEventListener('click', function(e) {
+            var link = e.target.closest && e.target.closest('a[href]');
+            if (!link) return;
+
+            var href = link.getAttribute('href');
+            if (
+                !href || href.charAt(0) === '#' ||
+                /^(https?:)?\/\//i.test(href) ||
+                /^(mailto|tel|javascript):/i.test(href) ||
+                href.indexOf('rmc_role=') !== -1 ||
+                href.indexOf('logout') !== -1
+            ) return;
+
+            if (link.dataset.rmcTagged === '1') return;
+            link.dataset.rmcTagged = '1';
+
+            link.href = href + (href.indexOf('?') === -1 ? '?' : '&') +
+                'rmc_role=' + encodeURIComponent(stored || serverRole || '');
+        }, true);
+
+        /* Tag form posts with this tab's role */
+        document.addEventListener('submit', function(e) {
+            var form = e.target;
+            if (!form || !form.elements || form.elements['rmc_role']) return;
+            var input = document.createElement('input');
+            input.type = 'hidden';
+            input.name = 'rmc_role';
+            input.value = stored || serverRole || '';
+            form.appendChild(input);
+        }, true);
+
+        /* Keep the shared cookie pointing at this tab right before leaving */
+        window.addEventListener('pagehide', writeCookie);
+        document.addEventListener('visibilitychange', function() {
+            if (document.visibilityState === 'visible') {
+                var cur = sessionStorage.getItem('rmc_role');
+                if (cur && cur !== stored) {
+                    stored = cur;
+                    if (serverRole && stored !== serverRole &&
+                        location.pathname.indexOf('login') === -1 &&
+                        location.search.indexOf('rmc_role=') === -1) {
+                        var sep2 = location.search ? '&' : '?';
+                        location.replace(location.pathname + location.search + sep2 + 'rmc_role=' + encodeURIComponent(stored));
+                    }
+                }
+                writeCookie();
+            }
+        });
+    } catch (err) { /* sessionStorage unavailable — legacy behavior */ }
+})();
+</script>
 
 </body>
 

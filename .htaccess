@@ -1,27 +1,19 @@
-# RMC Events — Apache Security Configuration
+# RMC Events - root protection
+# Blocks direct browser access to configuration/credential files and
+# internal notes. PHP's own include()/require() is NOT affected by this -
+# only direct HTTP requests to these files are blocked.
 
-# Enable rewrite engine
-RewriteEngine On
-
-# Block access to sensitive PHP files
-<FilesMatch "^(db_connect|csrf|send_email|lang|auth|email_templates|notifications_helper|qr_token|totp)\.php$">
+<FilesMatch "^(config\.local\.php|config\.local\.php\.example|email_config\.local\.php)$">
     Require all denied
 </FilesMatch>
 
-# Block access to SQL dumps and config files
-<FilesMatch "\.(sql|md|json|ini|env|log|bak|old|tmp)$">
+<FilesMatch "\.(env|ini|log|sql|bak)$">
     Require all denied
 </FilesMatch>
 
-# Block access to config files in parent directories
-<IfModule mod_rewrite.c>
-    RewriteRule \.(sql|md|json|ini|env|log|bak|old|tmp)$ - [F,L]
-</IfModule>
+<FilesMatch "^(UPDATE_NOTES\.txt|DEPLOYMENT_CONFIG\.txt)$">
+    Require all denied
+</FilesMatch>
 
 # Prevent directory listing
 Options -Indexes
-
-# Block access to hidden files
-<FilesMatch "^\.">
-    Require all denied
-</FilesMatch>

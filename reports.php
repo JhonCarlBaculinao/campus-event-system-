@@ -1,6 +1,5 @@
 <?php
 
-session_start();
 
 include 'db_connect.php';
 require 'lang.php';
@@ -45,9 +44,7 @@ $year_filter = isset($_GET['year'])
 
 $departments = [];
 
-$department_result = pg_query(
-    $conn,
-    "
+$department_result = $pdo->query("
     SELECT DISTINCT
         TRIM(department) AS department
     FROM users
@@ -55,17 +52,12 @@ $department_result = pg_query(
       AND department IS NOT NULL
       AND TRIM(department) <> ''
     ORDER BY department ASC
-    "
-);
+    ");
 
 if ($department_result) {
-
-    while ($row = pg_fetch_assoc($department_result)) {
-
+    while ($row = $department_result->fetch(PDO::FETCH_ASSOC)) {
         $departments[] = $row['department'];
-
     }
-
 }
 
 
@@ -75,9 +67,7 @@ if ($department_result) {
 
 $categories = [];
 
-$category_result = pg_query(
-    $conn,
-    "
+$category_result = $pdo->query("
     SELECT DISTINCT
         category
     FROM events
@@ -85,17 +75,12 @@ $category_result = pg_query(
       AND TRIM(category) <> ''
       AND status != 'deleted'
     ORDER BY category ASC
-    "
-);
+    ");
 
 if ($category_result) {
-
-    while ($row = pg_fetch_assoc($category_result)) {
-
+    while ($row = $category_result->fetch(PDO::FETCH_ASSOC)) {
         $categories[] = $row['category'];
-
     }
-
 }
 
 
@@ -105,26 +90,19 @@ if ($category_result) {
 
 $years = [];
 
-$year_result = pg_query(
-    $conn,
-    "
+$year_result = $pdo->query("
     SELECT DISTINCT
-        EXTRACT(YEAR FROM event_date)::INT AS event_year
+        EXTRACT(YEAR FROM event_date) AS event_year
     FROM events
     WHERE event_date IS NOT NULL
       AND status != 'deleted'
     ORDER BY event_year DESC
-    "
-);
+    ");
 
 if ($year_result) {
-
-    while ($row = pg_fetch_assoc($year_result)) {
-
+    while ($row = $year_result->fetch(PDO::FETCH_ASSOC)) {
         $years[] = (int) $row['event_year'];
-
     }
-
 }
 
 
@@ -136,88 +114,40 @@ if ($year_result) {
 $performance_conditions = [];
 $performance_conditions[] = "e.status != 'deleted'";
 $performance_params = [];
-$performance_param_index = 1;
-
-
-/* ORGANIZER */
 
 if ($role === 'organizer') {
-
-    $performance_conditions[] =
-        "e.organizer_id = $" . $performance_param_index;
-
+    $performance_conditions[] = "e.organizer_id = ?";
     $performance_params[] = $user_id;
-
-    $performance_param_index++;
-
 }
-
-
-/* CATEGORY */
 
 if ($category_filter !== '') {
-
-    $performance_conditions[] =
-        "e.category = $" . $performance_param_index;
-
+    $performance_conditions[] = "e.category = ?";
     $performance_params[] = $category_filter;
-
-    $performance_param_index++;
-
 }
-
-
-/* YEAR */
 
 if ($year_filter !== '') {
-
-    $performance_conditions[] =
-        "EXTRACT(YEAR FROM e.event_date) = $" .
-        $performance_param_index;
-
+    $performance_conditions[] = "EXTRACT(YEAR FROM e.event_date) = ?";
     $performance_params[] = (int) $year_filter;
-
-    $performance_param_index++;
-
 }
 
-
-/* DEPARTMENT */
-
 if ($department_filter !== '') {
-
-    $department_join_condition = "
-        AND EXISTS (
+    $performance_conditions[] = "
+        EXISTS (
             SELECT 1
             FROM users du
             WHERE du.user_id = r.user_id
-              AND TRIM(du.department) = $" .
-              $performance_param_index . "
+              AND TRIM(du.department) = ?
         )
     ";
-
     $performance_params[] = $department_filter;
-
-    $performance_param_index++;
-
-} else {
-
-    $department_join_condition = '';
-
 }
 
+$performance_where = ' WHERE ' . implode(' AND ', $performance_conditions);
 
-$performance_where = '';
-
-if (!empty($performance_conditions)) {
-
-    $performance_where =
-        ' WHERE ' .
-        implode(' AND ', $performance_conditions);
-
-}
-
-
+/*
+ * Attendance is counted from the real attendance table and linked to each
+ * registration. Only verified attendance is counted, once per registration.
+ */
 $performance_sql = "
     SELECT
         e.event_id,
@@ -226,18 +156,16 @@ $performance_sql = "
         e.venue,
         e.status,
 
-        COUNT(DISTINCT r.registration_id)
+        COUNT(DISTINCT CASE WHEN r.status = 'registered' THEN r.registration_id END)
             AS total_registrations,
 
-        COUNT(DISTINCT a.attendance_id)
+        COUNT(DISTINCT CASE WHEN r.status = 'registered' AND a.verified = 1 THEN r.registration_id END)
             AS total_attendance
 
     FROM events e
 
     LEFT JOIN registrations r
         ON e.event_id = r.event_id
-        $department_join_condition
-
     LEFT JOIN attendance a
         ON r.registration_id = a.registration_id
 
@@ -255,12 +183,8 @@ $performance_sql = "
         e.title ASC
 ";
 
-
-$performance_result = pg_query_params(
-    $conn,
-    $performance_sql,
-    $performance_params
-);
+$performance_result = $pdo->prepare($performance_sql);
+$performance_result->execute($performance_params);
 
 
 $labels = [];
@@ -272,26 +196,18 @@ $event_rows = [];
 
 if ($performance_result) {
 
-    while ($row = pg_fetch_assoc($performance_result)) {
+    while ($row = $performance_result->fetch(PDO::FETCH_ASSOC)) {
 
         $labels[] = $row['title'];
 
-        $registrations =
-            (int) $row['total_registrations'];
-
-        $attendance =
-            (int) $row['total_attendance'];
+        $registrations = (int) $row['total_registrations'];
+        $attendance = (int) $row['total_attendance'];
 
         $regCounts[] = $registrations;
-
         $attCounts[] = $attendance;
 
-        $rate =
-            $registrations > 0
-            ? round(
-                ($attendance / $registrations) * 100,
-                1
-            )
+        $rate = $registrations > 0
+            ? round(($attendance / $registrations) * 100, 1)
             : 0;
 
         $attendanceRates[] = $rate;
@@ -311,6 +227,10 @@ if ($performance_result) {
 
 }
 
+/* Top 5 events by registrations, for the At-a-Glance leaderboard
+   (event_rows is already ordered by total_registrations DESC above) */
+$top5_events = array_slice($event_rows, 0, 5);
+
 
 /* =========================================================
    REGISTRATION TREND
@@ -318,284 +238,53 @@ if ($performance_result) {
 
 $trend_conditions = [];
 $trend_conditions[] = "e.status != 'deleted'";
+$trend_conditions[] = "r.status = 'registered'";
 $trend_params = [];
-$trend_param_index = 1;
-
-
-/* ORGANIZER */
 
 if ($role === 'organizer') {
-
-    $trend_conditions[] =
-        "e.organizer_id = $" .
-        $trend_param_index;
-
+    $trend_conditions[] = "e.organizer_id = ?";
     $trend_params[] = $user_id;
-
-    $trend_param_index++;
-
 }
-
-
-/* CATEGORY */
 
 if ($category_filter !== '') {
-
-    $trend_conditions[] =
-        "e.category = $" .
-        $trend_param_index;
-
+    $trend_conditions[] = "e.category = ?";
     $trend_params[] = $category_filter;
-
-    $trend_param_index++;
-
 }
-
-
-/* YEAR */
 
 if ($year_filter !== '') {
-
-    $trend_conditions[] =
-        "EXTRACT(YEAR FROM e.event_date) = $" .
-        $trend_param_index;
-
+    $trend_conditions[] = "EXTRACT(YEAR FROM e.event_date) = ?";
     $trend_params[] = (int) $year_filter;
-
-    $trend_param_index++;
-
 }
-
-
-/* DEPARTMENT */
 
 if ($department_filter !== '') {
-
-    $trend_conditions[] =
-        "TRIM(u.department) = $" .
-        $trend_param_index;
-
+    $trend_conditions[] = "TRIM(u.department) = ?";
     $trend_params[] = $department_filter;
-
-    $trend_param_index++;
-
 }
 
+$trend_where = ' WHERE ' . implode(' AND ', $trend_conditions);
 
-$trend_where = '';
-
-if (!empty($trend_conditions)) {
-
-    $trend_where =
-        ' WHERE ' .
-        implode(' AND ', $trend_conditions);
-
-}
-
-
-$trend_result = pg_query_params(
-    $conn,
-
-    "
-    SELECT
-        DATE(r.registered_at) AS reg_date,
-        COUNT(*) AS total
-
+$trend_sql = "
+    SELECT DATE(r.registered_at) AS reg_date,
+           COUNT(*) AS total
     FROM registrations r
-
-    JOIN events e
-        ON r.event_id = e.event_id
-
-    JOIN users u
-        ON r.user_id = u.user_id
-
+    JOIN events e ON r.event_id = e.event_id
+    JOIN users u ON r.user_id = u.user_id
     $trend_where
-
     GROUP BY DATE(r.registered_at)
+    ORDER BY DATE(r.registered_at) ASC
+";
 
-    ORDER BY reg_date ASC
-    ",
-
-    $trend_params
-);
-
-
-$trendData = [];
-
-
-if ($trend_result) {
-
-    while ($row = pg_fetch_assoc($trend_result)) {
-
-        $trendData[$row['reg_date']] =
-            (int) $row['total'];
-
-    }
-
-}
-
+$trend_result = $pdo->prepare($trend_sql);
+$trend_result->execute($trend_params);
 
 $trendLabels = [];
 $trendCounts = [];
 
-
-/*
- * If a year is selected, display monthly data.
- * Otherwise show the last 14 days.
- */
-
-if (
-    $year_filter !== '' &&
-    ctype_digit((string) $year_filter)
-) {
-
-    $monthly_conditions = [];
-    $monthly_conditions[] = "e.status != 'deleted'";
-    $monthly_params = [];
-    $monthly_param_index = 1;
-
-
-    if ($role === 'organizer') {
-
-        $monthly_conditions[] =
-            "e.organizer_id = $" .
-            $monthly_param_index;
-
-        $monthly_params[] = $user_id;
-
-        $monthly_param_index++;
-
+if ($trend_result) {
+    while ($row = $trend_result->fetch(PDO::FETCH_ASSOC)) {
+        $trendLabels[] = $row['reg_date'];
+        $trendCounts[] = (int) $row['total'];
     }
-
-
-    $monthly_conditions[] =
-        "EXTRACT(YEAR FROM e.event_date) = $" .
-        $monthly_param_index;
-
-    $monthly_params[] = (int) $year_filter;
-
-    $monthly_param_index++;
-
-
-    if ($category_filter !== '') {
-
-        $monthly_conditions[] =
-            "e.category = $" .
-            $monthly_param_index;
-
-        $monthly_params[] = $category_filter;
-
-        $monthly_param_index++;
-
-    }
-
-
-    if ($department_filter !== '') {
-
-        $monthly_conditions[] =
-            "TRIM(u.department) = $" .
-            $monthly_param_index;
-
-        $monthly_params[] = $department_filter;
-
-        $monthly_param_index++;
-
-    }
-
-
-    $monthly_where =
-        'WHERE ' .
-        implode(
-            ' AND ',
-            $monthly_conditions
-        );
-
-
-    $monthly_result = pg_query_params(
-        $conn,
-
-        "
-        SELECT
-            EXTRACT(MONTH FROM e.event_date)::INT
-                AS month_number,
-
-            COUNT(r.registration_id)
-                AS total
-
-        FROM registrations r
-
-        JOIN events e
-            ON r.event_id = e.event_id
-
-        JOIN users u
-            ON r.user_id = u.user_id
-
-        $monthly_where
-
-        GROUP BY month_number
-
-        ORDER BY month_number
-        ",
-
-        $monthly_params
-    );
-
-
-    $monthlyData = [];
-
-    if ($monthly_result) {
-
-        while ($row = pg_fetch_assoc($monthly_result)) {
-
-            $monthlyData[
-                (int) $row['month_number']
-            ] = (int) $row['total'];
-
-        }
-
-    }
-
-
-    for ($month = 1; $month <= 12; $month++) {
-
-        $trendLabels[] =
-            date(
-                'M',
-                mktime(
-                    0,
-                    0,
-                    0,
-                    $month,
-                    1
-                )
-            );
-
-        $trendCounts[] =
-            $monthlyData[$month] ?? 0;
-
-    }
-
-} else {
-
-    for ($i = 13; $i >= 0; $i--) {
-
-        $d =
-            date(
-                'Y-m-d',
-                strtotime("-$i days")
-            );
-
-        $trendLabels[] =
-            date(
-                'M j',
-                strtotime($d)
-            );
-
-        $trendCounts[] =
-            $trendData[$d] ?? 0;
-
-    }
-
 }
 
 
@@ -605,123 +294,48 @@ if (
 
 $dept_conditions = [];
 $dept_conditions[] = "e.status != 'deleted'";
+$dept_conditions[] = "r.status = 'registered'";
 $dept_params = [];
-$dept_param_index = 1;
-
 
 if ($role === 'organizer') {
-
-    $dept_conditions[] =
-        "e.organizer_id = $" .
-        $dept_param_index;
-
+    $dept_conditions[] = "e.organizer_id = ?";
     $dept_params[] = $user_id;
-
-    $dept_param_index++;
-
 }
-
 
 if ($category_filter !== '') {
-
-    $dept_conditions[] =
-        "e.category = $" .
-        $dept_param_index;
-
+    $dept_conditions[] = "e.category = ?";
     $dept_params[] = $category_filter;
-
-    $dept_param_index++;
-
 }
-
 
 if ($year_filter !== '') {
-
-    $dept_conditions[] =
-        "EXTRACT(YEAR FROM e.event_date) = $" .
-        $dept_param_index;
-
+    $dept_conditions[] = "EXTRACT(YEAR FROM e.event_date) = ?";
     $dept_params[] = (int) $year_filter;
-
-    $dept_param_index++;
-
 }
 
-
-if ($department_filter !== '') {
-
-    $dept_conditions[] =
-        "TRIM(u.department) = $" .
-        $dept_param_index;
-
-    $dept_params[] = $department_filter;
-
-    $dept_param_index++;
-
-}
-
-
-$dept_where = '';
-
-if (!empty($dept_conditions)) {
-
-    $dept_where =
-        ' WHERE ' .
-        implode(
-            ' AND ',
-            $dept_conditions
-        );
-
-}
-
-
-$dept_result = pg_query_params(
-    $conn,
-
-    "
-    SELECT
-        COALESCE(
-            NULLIF(TRIM(u.department), ''),
-            'Unspecified'
-        ) AS department,
-
-        COUNT(r.registration_id) AS total
-
-    FROM registrations r
-
-    JOIN users u
-        ON r.user_id = u.user_id
-
-    JOIN events e
-        ON r.event_id = e.event_id
-
-    $dept_where
-
-    GROUP BY department
-
-    ORDER BY total DESC
-    ",
-
-    $dept_params
-);
-
+$dept_where = ' WHERE ' . implode(' AND ', $dept_conditions);
 
 $deptLabels = [];
 $deptCounts = [];
 
+$dept_sql = "
+    SELECT COALESCE(NULLIF(TRIM(u.department), ''), 'Unspecified') AS department,
+           COUNT(*) AS total
+    FROM registrations r
+    JOIN users u ON r.user_id = u.user_id
+    JOIN events e ON r.event_id = e.event_id
+    $dept_where
+    GROUP BY COALESCE(NULLIF(TRIM(u.department), ''), 'Unspecified')
+    ORDER BY total DESC
+";
+
+$dept_result = $pdo->prepare($dept_sql);
+$dept_result->execute($dept_params);
 
 if ($dept_result) {
-
-    while ($row = pg_fetch_assoc($dept_result)) {
-
-        $deptLabels[] =
-            $row['department'];
-
-        $deptCounts[] =
-            (int) $row['total'];
-
+    while ($row = $dept_result->fetch(PDO::FETCH_ASSOC)) {
+        $deptLabels[] = $row['department'];
+        $deptCounts[] = (int) $row['total'];
     }
-
 }
 
 
@@ -730,15 +344,13 @@ if ($dept_result) {
    ========================================================= */
 
 $current_status_counts = [];
-$current_status_result = pg_query($conn,
-    "SELECT status, COUNT(*) AS total
+$current_status_result = $pdo->query("SELECT status, COUNT(*) AS total
      FROM events
      WHERE status != 'deleted'
      GROUP BY status
-     ORDER BY total DESC"
-);
+     ORDER BY total DESC");
 if ($current_status_result) {
-    while ($row = pg_fetch_assoc($current_status_result)) {
+    while ($row = $current_status_result->fetch(PDO::FETCH_ASSOC)) {
         $current_status_counts[$row['status']] = (int) $row['total'];
     }
 }
@@ -749,57 +361,48 @@ if ($current_status_result) {
    ========================================================= */
 
 $ep_conditions = [];
+$ep_conditions[] = "e.status != 'deleted'";
+$ep_conditions[] = "r.status = 'registered'";
 $ep_params = [];
-$ep_index = 1;
 
 if ($role === 'organizer') {
-    $ep_conditions[] = "e.organizer_id = $" . $ep_index;
+    $ep_conditions[] = "e.organizer_id = ?";
     $ep_params[] = $user_id;
-    $ep_index++;
 }
 if ($category_filter !== '') {
-    $ep_conditions[] = "e.category = $" . $ep_index;
+    $ep_conditions[] = "e.category = ?";
     $ep_params[] = $category_filter;
-    $ep_index++;
 }
 if ($year_filter !== '') {
-    $ep_conditions[] = "EXTRACT(YEAR FROM e.event_date) = $" . $ep_index;
+    $ep_conditions[] = "EXTRACT(YEAR FROM e.event_date) = ?";
     $ep_params[] = (int) $year_filter;
-    $ep_index++;
 }
 if ($department_filter !== '') {
-    $ep_conditions[] = "TRIM(u.department) = $" . $ep_index;
+    $ep_conditions[] = "TRIM(u.department) = ?";
     $ep_params[] = $department_filter;
-    $ep_index++;
 }
 
-$ep_where = '';
-if (!empty($ep_conditions)) {
-    $ep_where = implode(' AND ', $ep_conditions);
-}
+$ep_where = ' WHERE ' . implode(' AND ', $ep_conditions);
 
-$ep_result = pg_query_params(
-    $conn,
-    "SELECT
-        e.title   AS event_title,
-        TRIM(u.department) AS dept,
-        COUNT(*)  AS total
-     FROM registrations r
-     JOIN events  e ON r.event_id  = e.event_id
-     JOIN users   u ON r.user_id   = u.user_id
-     WHERE 1=1
-       AND e.status = 'approved'
-       AND u.role = 'student'
-       AND TRIM(u.department) <> ''
-       " . (!empty($ep_where) ? "AND {$ep_where}" : "") . "
-     GROUP BY e.title, TRIM(u.department)
-     ORDER BY e.title, total DESC",
-    $ep_params
-);
+$ep_sql = "
+    SELECT e.title AS event_title,
+           COALESCE(NULLIF(TRIM(u.department), ''), 'Unspecified') AS dept,
+           COUNT(*) AS total
+    FROM registrations r
+    JOIN events e ON r.event_id = e.event_id
+    JOIN users u ON r.user_id = u.user_id
+    $ep_where
+    GROUP BY e.event_id, e.title,
+             COALESCE(NULLIF(TRIM(u.department), ''), 'Unspecified')
+    ORDER BY total DESC
+";
+
+$ep_result = $pdo->prepare($ep_sql);
+$ep_result->execute($ep_params);
 
 $event_dept = [];
 if ($ep_result) {
-    while ($row = pg_fetch_assoc($ep_result)) {
+    while ($row = $ep_result->fetch(PDO::FETCH_ASSOC)) {
         $event_dept[$row['event_title']][] = [
             'dept'  => $row['dept'],
             'total' => (int) $row['total'],
@@ -815,103 +418,48 @@ if ($ep_result) {
 $status_conditions = [];
 $status_conditions[] = "e.status != 'deleted'";
 $status_params = [];
-$status_param_index = 1;
-
 
 if ($role === 'organizer') {
-
-    $status_conditions[] =
-        "e.organizer_id = $" .
-        $status_param_index;
-
+    $status_conditions[] = "e.organizer_id = ?";
     $status_params[] = $user_id;
-
-    $status_param_index++;
-
 }
-
 
 if ($category_filter !== '') {
-
-    $status_conditions[] =
-        "e.category = $" .
-        $status_param_index;
-
+    $status_conditions[] = "e.category = ?";
     $status_params[] = $category_filter;
-
-    $status_param_index++;
-
 }
-
 
 if ($year_filter !== '') {
-
-    $status_conditions[] =
-        "EXTRACT(YEAR FROM e.event_date) = $" .
-        $status_param_index;
-
+    $status_conditions[] = "EXTRACT(YEAR FROM e.event_date) = ?";
     $status_params[] = (int) $year_filter;
-
-    $status_param_index++;
-
 }
 
-
 if ($department_filter !== '') {
-
     $status_conditions[] = "
         EXISTS (
             SELECT 1
             FROM registrations sr
-            JOIN users su
-                ON sr.user_id = su.user_id
+            JOIN users su ON sr.user_id = su.user_id
             WHERE sr.event_id = e.event_id
-              AND TRIM(su.department) = $" .
-              $status_param_index . "
+              AND TRIM(su.department) = ?
         )
     ";
-
-    $status_params[] =
-        $department_filter;
-
-    $status_param_index++;
-
+    $status_params[] = $department_filter;
 }
 
+$status_where = ' WHERE ' . implode(' AND ', $status_conditions);
 
-$status_where = '';
-
-if (!empty($status_conditions)) {
-
-    $status_where =
-        ' WHERE ' .
-        implode(
-            ' AND ',
-            $status_conditions
-        );
-
-}
-
-
-$status_result = pg_query_params(
-    $conn,
-
-    "
-    SELECT
-        e.status,
-        COUNT(*) AS total
-
+$status_sql = "
+    SELECT e.status,
+           COUNT(*) AS total
     FROM events e
-
     $status_where
-
     GROUP BY e.status
-
     ORDER BY total DESC
-    ",
+";
 
-    $status_params
-);
+$status_result = $pdo->prepare($status_sql);
+$status_result->execute($status_params);
 
 
 $statusLabels = [];
@@ -919,17 +467,10 @@ $statusCounts = [];
 
 
 if ($status_result) {
-
-    while ($row = pg_fetch_assoc($status_result)) {
-
-        $statusLabels[] =
-            ucfirst($row['status']);
-
-        $statusCounts[] =
-            (int) $row['total'];
-
+    while ($row = $status_result->fetch(PDO::FETCH_ASSOC)) {
+        $statusLabels[] = ucfirst($row['status']);
+        $statusCounts[] = (int) $row['total'];
     }
-
 }
 
 
@@ -944,110 +485,51 @@ if ($status_result) {
 $stats_event_conditions = [];
 $stats_event_conditions[] = "e.status != 'deleted'";
 $stats_event_params = [];
-$stats_event_index = 1;
-
 
 if ($role === 'organizer') {
-
-    $stats_event_conditions[] =
-        "e.organizer_id = $" .
-        $stats_event_index;
-
-    $stats_event_params[] =
-        $user_id;
-
-    $stats_event_index++;
-
+    $stats_event_conditions[] = "e.organizer_id = ?";
+    $stats_event_params[] = $user_id;
 }
-
 
 if ($category_filter !== '') {
-
-    $stats_event_conditions[] =
-        "e.category = $" .
-        $stats_event_index;
-
-    $stats_event_params[] =
-        $category_filter;
-
-    $stats_event_index++;
-
+    $stats_event_conditions[] = "e.category = ?";
+    $stats_event_params[] = $category_filter;
 }
-
 
 if ($year_filter !== '') {
-
-    $stats_event_conditions[] =
-        "EXTRACT(YEAR FROM e.event_date) = $" .
-        $stats_event_index;
-
-    $stats_event_params[] =
-        (int) $year_filter;
-
-    $stats_event_index++;
-
+    $stats_event_conditions[] = "EXTRACT(YEAR FROM e.event_date) = ?";
+    $stats_event_params[] = (int) $year_filter;
 }
 
-
 if ($department_filter !== '') {
-
     $stats_event_conditions[] = "
         EXISTS (
             SELECT 1
             FROM registrations sr
-            JOIN users su
-                ON sr.user_id = su.user_id
+            JOIN users su ON sr.user_id = su.user_id
             WHERE sr.event_id = e.event_id
-              AND TRIM(su.department) = $" .
-              $stats_event_index . "
+              AND TRIM(su.department) = ?
         )
     ";
-
-    $stats_event_params[] =
-        $department_filter;
-
-    $stats_event_index++;
-
+    $stats_event_params[] = $department_filter;
 }
 
-
-$stats_event_where = '';
-
-if (!empty($stats_event_conditions)) {
-
-    $stats_event_where =
-        ' WHERE ' .
-        implode(
-            ' AND ',
-            $stats_event_conditions
-        );
-
-}
+$stats_event_where = ' WHERE ' . implode(' AND ', $stats_event_conditions);
 
 
 /*
  * Total events
  */
 
-$total_events_result = pg_query_params(
-    $conn,
-
-    "
+$total_events_result = $pdo->prepare("
     SELECT COUNT(*)
     FROM events e
     $stats_event_where
-    ",
+    ");
+$total_events_result->execute($stats_event_params);
 
-    $stats_event_params
-);
-
-$total_events =
-    $total_events_result
-    ? (int) pg_fetch_result(
-        $total_events_result,
-        0,
-        0
-    )
+$total_events = $total_events_result
+    ? (int)(($total_events_result->fetch(PDO::FETCH_NUM) ?: [0])[0])
     : 0;
 
 
@@ -1055,50 +537,24 @@ $total_events =
  * Approved events
  */
 
-$approved_conditions =
-    $stats_event_conditions;
+$approved_conditions = $stats_event_conditions;
+$approved_params = $stats_event_params;
 
-$approved_params =
-    $stats_event_params;
+$approved_conditions[] = "e.status = ?";
+$approved_params[] = 'approved';
 
-$approved_index =
-    count($approved_params) + 1;
+$approved_where = ' WHERE ' . implode(' AND ', $approved_conditions);
 
-$approved_conditions[] =
-    "e.status = $" .
-    $approved_index;
-
-$approved_params[] =
-    'approved';
-
-$approved_where =
-    ' WHERE ' .
-    implode(
-        ' AND ',
-        $approved_conditions
-    );
-
-
-$approved_result = pg_query_params(
-    $conn,
-
-    "
+$approved_result = $pdo->prepare("
     SELECT COUNT(*)
     FROM events e
     $approved_where
-    ",
-
-    $approved_params
-);
+    ");
+$approved_result->execute($approved_params);
 
 
-$approved_events =
-    $approved_result
-    ? (int) pg_fetch_result(
-        $approved_result,
-        0,
-        0
-    )
+$approved_events = $approved_result
+    ? (int)(($approved_result->fetch(PDO::FETCH_NUM) ?: [0])[0])
     : 0;
 
 
@@ -1106,56 +562,26 @@ $approved_events =
  * Student count
  */
 
-$student_conditions = [
-    "u.role = 'student'"
-];
-
+$student_conditions = ["u.role = 'student'"];
 $student_params = [];
-$student_index = 1;
-
 
 if ($department_filter !== '') {
-
-    $student_conditions[] =
-        "TRIM(u.department) = $" .
-        $student_index;
-
-    $student_params[] =
-        $department_filter;
-
-    $student_index++;
-
+    $student_conditions[] = "TRIM(u.department) = ?";
+    $student_params[] = $department_filter;
 }
 
+$student_where = ' WHERE ' . implode(' AND ', $student_conditions);
 
-$student_where =
-    ' WHERE ' .
-    implode(
-        ' AND ',
-        $student_conditions
-    );
-
-
-$student_result = pg_query_params(
-    $conn,
-
-    "
+$student_result = $pdo->prepare("
     SELECT COUNT(*)
     FROM users u
     $student_where
-    ",
-
-    $student_params
-);
+    ");
+$student_result->execute($student_params);
 
 
-$total_students =
-    $student_result
-    ? (int) pg_fetch_result(
-        $student_result,
-        0,
-        0
-    )
+$total_students = $student_result
+    ? (int)(($student_result->fetch(PDO::FETCH_NUM) ?: [0])[0])
     : 0;
 
 
@@ -1165,298 +591,137 @@ $total_students =
 
 $registration_conditions = [];
 $registration_conditions[] = "e.status != 'deleted'";
+$registration_conditions[] = "r.status = 'registered'";
 $registration_params = [];
-$registration_index = 1;
-
 
 if ($role === 'organizer') {
-
-    $registration_conditions[] =
-        "e.organizer_id = $" .
-        $registration_index;
-
-    $registration_params[] =
-        $user_id;
-
-    $registration_index++;
-
+    $registration_conditions[] = "e.organizer_id = ?";
+    $registration_params[] = $user_id;
 }
-
 
 if ($category_filter !== '') {
-
-    $registration_conditions[] =
-        "e.category = $" .
-        $registration_index;
-
-    $registration_params[] =
-        $category_filter;
-
-    $registration_index++;
-
+    $registration_conditions[] = "e.category = ?";
+    $registration_params[] = $category_filter;
 }
-
 
 if ($year_filter !== '') {
-
-    $registration_conditions[] =
-        "EXTRACT(YEAR FROM e.event_date) = $" .
-        $registration_index;
-
-    $registration_params[] =
-        (int) $year_filter;
-
-    $registration_index++;
-
+    $registration_conditions[] = "EXTRACT(YEAR FROM e.event_date) = ?";
+    $registration_params[] = (int) $year_filter;
 }
-
 
 if ($department_filter !== '') {
-
-    $registration_conditions[] =
-        "TRIM(u.department) = $" .
-        $registration_index;
-
-    $registration_params[] =
-        $department_filter;
-
-    $registration_index++;
-
+    $registration_conditions[] = "TRIM(u.department) = ?";
+    $registration_params[] = $department_filter;
 }
 
+$registration_where = ' WHERE ' . implode(' AND ', $registration_conditions);
 
-$registration_where = '';
-
-if (!empty($registration_conditions)) {
-
-    $registration_where =
-        ' WHERE ' .
-        implode(
-            ' AND ',
-            $registration_conditions
-        );
-
-}
-
-
-$total_registrations_result =
-    pg_query_params(
-        $conn,
-
-        "
-        SELECT COUNT(r.registration_id)
-
+$total_registrations_result = $pdo->prepare("
+        SELECT COUNT(*)
         FROM registrations r
-
-        JOIN events e
-            ON r.event_id = e.event_id
-
-        JOIN users u
-            ON r.user_id = u.user_id
-
+        JOIN events e ON r.event_id = e.event_id
+        JOIN users u ON r.user_id = u.user_id
         $registration_where
-        ",
-
-        $registration_params
-    );
+        ");
+$total_registrations_result->execute($registration_params);
 
 
-$total_registrations =
-    $total_registrations_result
-    ? (int) pg_fetch_result(
-        $total_registrations_result,
-        0,
-        0
-    )
+$total_registrations = $total_registrations_result
+    ? (int)(($total_registrations_result->fetch(PDO::FETCH_NUM) ?: [0])[0])
     : 0;
 
 
-/*
- * Attendance
- */
+/* Attendance */
 
-$total_attendance_result =
-    pg_query_params(
-        $conn,
+$overall_attendance_conditions = ["a.verified = 1", "r.status = 'registered'", "e.status != 'deleted'"];
+$overall_attendance_params = [];
+if ($role === 'organizer') {
+    $overall_attendance_conditions[] = 'e.organizer_id = ?';
+    $overall_attendance_params[] = $user_id;
+}
+if ($category_filter !== '') {
+    $overall_attendance_conditions[] = 'e.category = ?';
+    $overall_attendance_params[] = $category_filter;
+}
+if ($year_filter !== '') {
+    $overall_attendance_conditions[] = 'EXTRACT(YEAR FROM e.event_date) = ?';
+    $overall_attendance_params[] = (int) $year_filter;
+}
+if ($department_filter !== '') {
+    $overall_attendance_conditions[] = 'TRIM(u.department) = ?';
+    $overall_attendance_params[] = $department_filter;
+}
 
-        "
-        SELECT COUNT(a.attendance_id)
+$total_attendance_result = $pdo->prepare("
+    SELECT COUNT(DISTINCT a.registration_id)
+    FROM attendance a
+    JOIN registrations r ON a.registration_id = r.registration_id
+    JOIN events e ON r.event_id = e.event_id
+    JOIN users u ON r.user_id = u.user_id
+    WHERE " . implode(' AND ', $overall_attendance_conditions));
+$total_attendance_result->execute($overall_attendance_params);
 
-        FROM attendance a
-
-        JOIN registrations r
-            ON a.registration_id = r.registration_id
-
-        JOIN events e
-            ON r.event_id = e.event_id
-
-        JOIN users u
-            ON r.user_id = u.user_id
-
-        $registration_where
-        ",
-
-        $registration_params
-    );
-
-
-$total_attendance =
-    $total_attendance_result
-    ? (int) pg_fetch_result(
-        $total_attendance_result,
-        0,
-        0
-    )
+$total_attendance = $total_attendance_result
+    ? (int)(($total_attendance_result->fetch(PDO::FETCH_NUM) ?: [0])[0])
     : 0;
 
 
-/*
- * Overall attendance rate
- */
+/* Attendance rate */
 
-$overallRate =
-    $total_registrations > 0
-    ? round(
-        (
-            $total_attendance /
-            $total_registrations
-        ) * 100,
-        1
-    )
+$overallRate = $total_registrations > 0
+    ? round(($total_attendance / $total_registrations) * 100, 1)
     : 0;
 
 
 /* =========================================================
    FEEDBACK & SATISFACTION ANALYTICS
-   =========================================================
-   Feedback is connected to events and students.
-
-   The same filters used by the reports page are applied:
-   - Organizer
-   - Category
-   - Year
-   - Department
    ========================================================= */
 
 $feedback_conditions = [];
 $feedback_conditions[] = "e.status != 'deleted'";
 $feedback_params = [];
-$feedback_param_index = 1;
-
-
-/* ORGANIZER */
 
 if ($role === 'organizer') {
-
-    $feedback_conditions[] =
-        "e.organizer_id = $" .
-        $feedback_param_index;
-
-    $feedback_params[] =
-        $user_id;
-
-    $feedback_param_index++;
-
+    $feedback_conditions[] = "e.organizer_id = ?";
+    $feedback_params[] = $user_id;
 }
-
-
-/* CATEGORY */
 
 if ($category_filter !== '') {
-
-    $feedback_conditions[] =
-        "e.category = $" .
-        $feedback_param_index;
-
-    $feedback_params[] =
-        $category_filter;
-
-    $feedback_param_index++;
-
+    $feedback_conditions[] = "e.category = ?";
+    $feedback_params[] = $category_filter;
 }
-
-
-/* YEAR */
 
 if ($year_filter !== '') {
-
-    $feedback_conditions[] =
-        "EXTRACT(YEAR FROM e.event_date) = $" .
-        $feedback_param_index;
-
-    $feedback_params[] =
-        (int) $year_filter;
-
-    $feedback_param_index++;
-
+    $feedback_conditions[] = "EXTRACT(YEAR FROM e.event_date) = ?";
+    $feedback_params[] = (int) $year_filter;
 }
-
-
-/* DEPARTMENT */
 
 if ($department_filter !== '') {
-
-    $feedback_conditions[] =
-        "TRIM(u.department) = $" .
-        $feedback_param_index;
-
-    $feedback_params[] =
-        $department_filter;
-
-    $feedback_param_index++;
-
+    $feedback_conditions[] = "TRIM(u.department) = ?";
+    $feedback_params[] = $department_filter;
 }
 
-
-$feedback_where = '';
-
-if (!empty($feedback_conditions)) {
-
-    $feedback_where =
-        ' WHERE ' .
-        implode(
-            ' AND ',
-            $feedback_conditions
-        );
-
-}
+$feedback_where = ' WHERE ' . implode(' AND ', $feedback_conditions);
 
 
 /* =========================================================
    OVERALL FEEDBACK RATING
    ========================================================= */
 
-$feedback_summary_result = pg_query_params(
-    $conn,
-
-    "
+$feedback_summary_result = $pdo->prepare("
     SELECT
-
-        ROUND(
-            AVG(f.rating)::numeric,
-            1
-        ) AS average_rating,
-
-        COUNT(f.feedback_id)
-            AS total_feedback
-
+        ROUND(AVG(f.rating)) AS average_rating,
+        COUNT(f.feedback_id) AS total_feedback
     FROM feedback f
-
-    JOIN events e
-        ON f.event_id = e.event_id
-
-    JOIN users u
-        ON f.user_id = u.user_id
-
+    JOIN events e ON f.event_id = e.event_id
+    JOIN users u ON f.user_id = u.user_id
     $feedback_where
-    ",
-
-    $feedback_params
-);
+    ");
+$feedback_summary_result->execute($feedback_params);
 
 
 $feedback_summary = $feedback_summary_result
-    ? pg_fetch_assoc($feedback_summary_result)
+    ? $feedback_summary_result->fetch(PDO::FETCH_ASSOC)
     : [];
 
 
@@ -1486,49 +751,27 @@ $rating_distribution = [
 ];
 
 
-$rating_result = pg_query_params(
-    $conn,
-
-    "
+$rating_result = $pdo->prepare("
     SELECT
         f.rating,
         COUNT(*) AS total
-
     FROM feedback f
-
-    JOIN events e
-        ON f.event_id = e.event_id
-
-    JOIN users u
-        ON f.user_id = u.user_id
-
+    JOIN events e ON f.event_id = e.event_id
+    JOIN users u ON f.user_id = u.user_id
     $feedback_where
-
     GROUP BY f.rating
-
     ORDER BY f.rating DESC
-    ",
-
-    $feedback_params
-);
+    ");
+$rating_result->execute($feedback_params);
 
 
 if ($rating_result) {
-
-    while ($row = pg_fetch_assoc($rating_result)) {
-
-        $rating =
-            (int) $row['rating'];
-
+    while ($row = $rating_result->fetch(PDO::FETCH_ASSOC)) {
+        $rating = (int) $row['rating'];
         if ($rating >= 1 && $rating <= 5) {
-
-            $rating_distribution[$rating] =
-                (int) $row['total'];
-
+            $rating_distribution[$rating] = (int) $row['total'];
         }
-
     }
-
 }
 
 
@@ -1539,140 +782,77 @@ if ($rating_result) {
 $rating_percentages = [];
 
 for ($rating = 5; $rating >= 1; $rating--) {
-
-    $rating_percentages[$rating] =
-        $total_feedback > 0
-        ? round(
-            (
-                $rating_distribution[$rating] /
-                $total_feedback
-            ) * 100,
-            1
-        )
+    $rating_percentages[$rating] = $total_feedback > 0
+        ? round(($rating_distribution[$rating] / $total_feedback) * 100, 1)
         : 0;
-
 }
 
 
 /* =========================================================
    MOST COMMON FEEDBACK
-   =========================================================
-   Blank comments are excluded.
-
-   Repeated identical comments are grouped together.
    ========================================================= */
 
 $common_feedback = [];
 
-
-$common_feedback_result = pg_query_params(
-    $conn,
-
-    "
+$common_feedback_result = $pdo->prepare("
     SELECT
         TRIM(f.comment) AS comment,
         COUNT(*) AS feedback_count
-
     FROM feedback f
-
-    JOIN events e
-        ON f.event_id = e.event_id
-
-    JOIN users u
-        ON f.user_id = u.user_id
-
+    JOIN events e ON f.event_id = e.event_id
+    JOIN users u ON f.user_id = u.user_id
     $feedback_where
-
     AND f.comment IS NOT NULL
     AND TRIM(f.comment) <> ''
-
     GROUP BY TRIM(f.comment)
-
     ORDER BY
         feedback_count DESC,
         MIN(f.created_at) DESC
-
     LIMIT 5
-    ",
-
-    $feedback_params
-);
+    ");
+$common_feedback_result->execute($feedback_params);
 
 
 if ($common_feedback_result) {
-
-    while ($row = pg_fetch_assoc($common_feedback_result)) {
-
+    while ($row = $common_feedback_result->fetch(PDO::FETCH_ASSOC)) {
         $common_feedback[] = [
-            'comment' =>
-                $row['comment'],
-
-            'count' =>
-                (int) $row['feedback_count']
+            'comment' => $row['comment'],
+            'count'   => (int) $row['feedback_count']
         ];
-
     }
-
 }
 
 
 /* =========================================================
    RECENT FEEDBACK FALLBACK
-   =========================================================
-   If comments are unique and therefore no repeated
-   "common" comments exist, show useful recent comments.
    ========================================================= */
 
 if (count($common_feedback) === 0) {
 
-    $recent_feedback_result = pg_query_params(
-        $conn,
-
-        "
+    $recent_feedback_result = $pdo->prepare("
         SELECT
             TRIM(f.comment) AS comment,
-            f.created_at
-
+            MIN(f.created_at) AS created_at
         FROM feedback f
-
-        JOIN events e
-            ON f.event_id = e.event_id
-
-        JOIN users u
-            ON f.user_id = u.user_id
-
+        JOIN events e ON f.event_id = e.event_id
+        JOIN users u ON f.user_id = u.user_id
         $feedback_where
-
         AND f.comment IS NOT NULL
         AND TRIM(f.comment) <> ''
-
         ORDER BY f.created_at DESC
-
         LIMIT 5
-        ",
-
-        $feedback_params
-    );
+        ");
+    $recent_feedback_result->execute($feedback_params);
 
 
     if ($recent_feedback_result) {
-
-        while (
-            $row =
-            pg_fetch_assoc($recent_feedback_result)
-        ) {
-
+        while ($row = $recent_feedback_result->fetch(PDO::FETCH_ASSOC)) {
             $common_feedback[] = [
-                'comment' =>
-                    $row['comment'],
-
-                'count' => 1
+                'comment' => $row['comment'],
+                'count'   => 1
             ];
-
         }
-
     }
-
 }
 
 
@@ -1680,28 +860,12 @@ if (count($common_feedback) === 0) {
    UNREAD COUNT + RECENT NOTIFICATIONS (shared header)
    ========================================================= */
 
-$unread_count = (int) pg_fetch_result(
-    pg_query_params(
-        $conn,
-        "SELECT COUNT(*)
-         FROM notifications
-         WHERE user_id = $1
-           AND is_read = false",
-        array($user_id)
-    ),
-    0,
-    0
-);
+$stmt = $pdo->prepare("SELECT COUNT(*) FROM notifications WHERE user_id = ? AND is_read = false");
+$stmt->execute([$user_id]);
+$unread_count = (int)$stmt->fetchColumn();
 
-$recent_notifications = pg_query_params(
-    $conn,
-    "SELECT notification_id, type, message, is_read, created_at
-     FROM notifications
-     WHERE user_id = $1
-     ORDER BY created_at DESC
-     LIMIT 5",
-    array($user_id)
-);
+$recent_notifications = $pdo->prepare("SELECT notification_id, type, message, is_read, created_at FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 5");
+$recent_notifications->execute([$user_id]);
 
 
 /* =========================================================
@@ -1932,7 +1096,7 @@ $active_page = 'reports';
             </button>
 
             <a
-                href="reports.php"
+                    href="reports.php"
                 class="bg-white hover:bg-rmc-50 border border-rmc-200 text-rmc-800 px-5 py-3 rounded-xl font-semibold transition"
             >
 
@@ -2080,6 +1244,113 @@ $active_page = 'reports';
                 <i class="fa-solid fa-calendar-days"></i>
                 <?= t('export_my_events') ?: 'My Events'; ?>
             </a>
+
+        <?php endif; ?>
+
+    </div>
+
+</div>
+
+
+<!-- =========================================================
+     AT A GLANCE
+     Summary list + attendance gauge + top-5 leaderboard,
+     grouped into one dashboard-style row.
+     ========================================================= -->
+
+<div class="grid lg:grid-cols-3 gap-6 sm:gap-8 mb-8">
+
+    <!-- SUMMARY LIST -->
+
+    <div class="bg-white rounded-[26px] border border-slate-200 shadow-sm p-6 sm:p-7 animate-up delay-2">
+
+        <h2 class="text-lg font-bold text-slate-900 mb-5">Summary</h2>
+
+        <div class="space-y-2.5">
+
+            <a href="<?= $role === 'admin' ? 'admin_events.php' : '#event-analytics'; ?>" class="flex items-center justify-between rounded-2xl px-4 py-3 bg-rmc-50 hover:bg-rmc-100 transition group">
+                <span class="text-sm font-semibold text-rmc-900">Total Events</span>
+                <span class="text-sm font-bold text-rmc-900"><?= $total_events; ?></span>
+            </a>
+
+            <a href="<?= $role === 'admin' ? 'admin_events.php?filter=approved' : '#event-analytics'; ?>" class="flex items-center justify-between rounded-2xl px-4 py-3 bg-emerald-50 hover:bg-emerald-100 transition">
+                <span class="text-sm font-semibold text-emerald-900">Approved</span>
+                <span class="text-sm font-bold text-emerald-900"><?= $approved_events; ?></span>
+            </a>
+
+            <a href="<?= $role === 'admin' ? 'admin_users.php' : '#event-analytics'; ?>" class="flex items-center justify-between rounded-2xl px-4 py-3 bg-slate-100 hover:bg-slate-200 transition">
+                <span class="text-sm font-semibold text-slate-700">Students</span>
+                <span class="text-sm font-bold text-slate-700"><?= $total_students; ?></span>
+            </a>
+
+            <a href="<?= $role === 'admin' ? 'admin_events.php' : '#event-analytics'; ?>" class="flex items-center justify-between rounded-2xl px-4 py-3 bg-amber-50 hover:bg-amber-100 transition">
+                <span class="text-sm font-semibold text-amber-800">Registrations</span>
+                <span class="text-sm font-bold text-amber-800"><?= $total_registrations; ?></span>
+            </a>
+
+        </div>
+
+    </div>
+
+
+    <!-- ATTENDANCE GAUGE -->
+
+    <div class="bg-white rounded-[26px] border border-slate-200 shadow-sm p-6 sm:p-7 animate-up delay-2 flex flex-col">
+
+        <h2 class="text-lg font-bold text-slate-900 mb-1">Overall Attendance Rate</h2>
+        <p class="text-slate-500 text-sm mb-2">Attended vs. total registrations</p>
+
+        <div class="relative flex-1 flex items-center justify-center min-h-[200px]">
+            <canvas id="gaugeChart" width="220" height="150"></canvas>
+            <div class="absolute inset-0 flex flex-col items-center justify-center pointer-events-none" style="top: 18px;">
+                <span class="text-4xl font-bold text-slate-900"><?= $overallRate; ?>%</span>
+                <span class="text-xs text-slate-500 mt-1"><?= $total_attendance; ?> / <?= $total_registrations; ?> attended</span>
+            </div>
+        </div>
+
+    </div>
+
+
+    <!-- TOP 5 EVENTS LEADERBOARD -->
+
+    <div class="bg-white rounded-[26px] border border-slate-200 shadow-sm p-6 sm:p-7 animate-up delay-2">
+
+        <h2 class="text-lg font-bold text-slate-900 mb-1">Top Events</h2>
+        <p class="text-slate-500 text-sm mb-4">By registrations</p>
+
+        <?php if (count($top5_events) > 0): ?>
+
+            <div class="space-y-1">
+
+                <div class="grid grid-cols-[1fr_auto_auto] gap-3 px-1 pb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                    <span>Event</span>
+                    <span class="text-right">Reg.</span>
+                    <span class="text-right">Rate</span>
+                </div>
+
+                <?php foreach ($top5_events as $i => $te): ?>
+
+                    <a
+                            href="event_detail.php?event_id=<?= $te['event_id']; ?>"
+                        class="grid grid-cols-[1fr_auto_auto] gap-3 items-center rounded-xl px-1.5 py-2 hover:bg-slate-50 transition"
+                    >
+                        <span class="flex items-center gap-2 min-w-0">
+                            <span class="w-5 h-5 shrink-0 rounded-full bg-rmc-100 text-rmc-800 text-[10px] font-bold flex items-center justify-center"><?= $i + 1; ?></span>
+                            <span class="text-sm font-semibold text-slate-700 truncate"><?= htmlspecialchars($te['title']); ?></span>
+                        </span>
+                        <span class="text-sm font-bold text-slate-700 text-right"><?= $te['registered']; ?></span>
+                        <span class="text-sm font-bold text-emerald-600 text-right"><?= $te['rate']; ?>%</span>
+                    </a>
+
+                <?php endforeach; ?>
+
+            </div>
+
+        <?php else: ?>
+
+            <div class="text-center py-10 text-slate-400 text-sm">
+                No event data yet.
+            </div>
 
         <?php endif; ?>
 
@@ -3097,6 +2368,37 @@ $stat_links = array(
 
 
 /* =====================================================
+   ATTENDANCE GAUGE (semi-doughnut, center text drawn via
+   the absolutely-positioned div above the canvas in PHP)
+   ===================================================== */
+
+new Chart(
+    document.getElementById('gaugeChart'),
+    {
+        type: 'doughnut',
+        data: {
+            datasets: [{
+                data: [<?= $overallRate; ?>, <?= max(0, 100 - $overallRate); ?>],
+                backgroundColor: ['#1E3A5F', '#e5e7eb'],
+                borderWidth: 0
+            }]
+        },
+        options: {
+            circumference: 180,
+            rotation: 270,
+            cutout: '75%',
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: { display: false },
+                tooltip: { enabled: false }
+            }
+        }
+    }
+);
+
+
+/* =====================================================
    EVENT PERFORMANCE
    ===================================================== */
 
@@ -3120,7 +2422,7 @@ new Chart(
                     data:
                         <?= json_encode($regCounts); ?>,
 
-                    backgroundColor: '#7a0c0c',
+                    backgroundColor: '#1E3A5F',
 
                     borderRadius: 10
                 },
@@ -3131,7 +2433,7 @@ new Chart(
                     data:
                         <?= json_encode($attCounts); ?>,
 
-                    backgroundColor: '#e0afaf',
+                    backgroundColor: '#94a9c2',
 
                     borderRadius: 10
                 }
@@ -3266,17 +2568,17 @@ new Chart(
                         <?= json_encode($trendCounts); ?>,
 
                     borderColor:
-                        '#7a0c0c',
+                        '#1E3A5F',
 
                     backgroundColor:
-                        'rgba(122,12,12,0.12)',
+                        'rgba(30,58,95,0.12)',
 
                     fill: true,
 
                     tension: 0.35,
 
                     pointBackgroundColor:
-                        '#7a0c0c'
+                        '#1E3A5F'
 
                 }
 
@@ -3342,14 +2644,14 @@ new Chart(
 
                     backgroundColor: [
 
-                        '#7a0c0c',
-                        '#873131',
-                        '#a24444',
-                        '#bb6060',
-                        '#cf8585',
-                        '#e0afaf',
-                        '#640909',
-                        '#3c0404'
+                        '#1E3A5F',
+                        '#2f5580',
+                        '#4571a3',
+                        '#5f8ec2',
+                        '#84acd8',
+                        '#b3cce9',
+                        '#172A4A',
+                        '#0B1F3A'
 
                     ]
 

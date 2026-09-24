@@ -1,706 +1,335 @@
 <?php
-session_start();
 
-require 'db_connect.php';
-require 'send_email.php';
+include 'db_connect.php';
 require 'csrf.php';
 require 'lang.php';
+require 'send_email.php';
 require_once 'email_templates.php';
+require_once 'notifications_helper.php';
 
-$error = '';
-$success = '';
-
-$email = $_SESSION['verification_email'] ?? '';
-
-if ($email === '') {
-
-    header("Location: register.php");
+if (empty($_SESSION['verification_email'])) {
+    header("Location: account.php?mode=register");
     exit();
 }
 
+$email = $_SESSION['verification_email'];
+
+$error   = '';
+$success = '';
+
+$MAX_ATTEMPTS = 5;
 
 /*
 |--------------------------------------------------------------------------
-| RESEND VERIFICATION EMAIL
-|--------------------------------------------------------------------------
-| Cooldown: 60 seconds. Rate limit: maximum 5 resends per session.
+| Handle POST
 |--------------------------------------------------------------------------
 */
-
-$resend_error = '';
-
-if (
-    $_SERVER['REQUEST_METHOD'] === 'POST' &&
-    isset($_POST['resend_verification'])
-) {
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     csrf_verify();
 
-    $cooldown_seconds = 60;
+    $form_action = $_POST['form_action'] ?? '';
 
-    $last_resend = $_SESSION['verify_resend_at'] ?? 0;
+    /*
+    |======================================================================
+    | VERIFY CODE
+    |======================================================================
+    */
+    if ($form_action === 'verify_code') {
 
-    $elapsed = time() - (int)$last_resend;
+        $entered_code = trim($_POST['verification_code'] ?? '');
 
-    if ($elapsed < $cooldown_seconds) {
-
-        $resend_error = sprintf(
-            t('resend_cooldown_msg'),
-            $cooldown_seconds - $elapsed
-        );
-
-    } else {
-
-        $resend_count = (int)($_SESSION['verify_resend_count'] ?? 0);
-
-        if ($resend_count >= 5) {
-
-            $resend_error = t('resend_rate_limit_msg');
-
-        } else {
-
-            $pending = pg_query_params(
-                $conn,
-                "
-                SELECT verification_id, full_name, email
-                FROM email_verifications
-                WHERE LOWER(TRIM(email)) = LOWER(TRIM($1))
-                ORDER BY created_at DESC
-                LIMIT 1
-                ",
-                [$email]
-            );
-
-            if (!$pending) {
-
-                error_log(
-                    "Resend verification lookup failed: " .
-                    pg_last_error($conn)
-                );
-
-                $resend_error = t('verification_db_error');
-
-            } elseif (pg_num_rows($pending) === 0) {
-
-                $resend_error = t('verification_not_found');
-
-            } else {
-
-                $pending_row = pg_fetch_assoc($pending);
-
-                try {
-
-                    $new_code = (string) random_int(100000, 999999);
-
-                } catch (Exception $e) {
-
-                    error_log(
-                        "Resend code generation failed: " .
-                        $e->getMessage()
-                    );
-
-                    $new_code = null;
-                }
-
-                if ($new_code === null) {
-
-                    $resend_error = t('verification_code_gen_error');
-
-                } else {
-
-                    $expires_at = date(
-                        'Y-m-d H:i:s',
-                        time() + (10 * 60)
-                    );
-
-                    $update = pg_query_params(
-                        $conn,
-                        "
-                        UPDATE email_verifications
-                        SET verification_code = $1,
-                            expires_at = $2,
-                            attempts = 0
-                        WHERE verification_id = $3
-                        ",
-                        [
-                            $new_code,
-                            $expires_at,
-                            $pending_row['verification_id']
-                        ]
-                    );
-
-                    if (!$update) {
-
-                        error_log(
-                            "Resend verification update failed: " .
-                            pg_last_error($conn)
-                        );
-
-                        $resend_error = t('verification_db_error');
-
-                    } else {
-
-                        $email_html = build_verification_email_html(
-                            $pending_row['full_name'],
-                            $new_code
-                        );
-
-                        $email_sent = send_email_deferred(
-                            $email,
-                            'Verify Your Regis Marie College Account',
-                            $email_html
-                        );
-
-                        if (!$email_sent) {
-
-                            error_log(
-                                "Resend verification email failed for: " .
-                                $email
-                            );
-
-                            $resend_error = t('verification_email_failed');
-
-                        } else {
-
-                            $_SESSION['verify_resend_at'] = time();
-
-                            $_SESSION['verify_resend_count'] =
-                                $resend_count + 1;
-
-                            $resend_error = '';
-                            $success = t('resend_verification_sent');
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-
-/*
-|--------------------------------------------------------------------------
-| VERIFY CODE
-|--------------------------------------------------------------------------
-*/
-
-if (
-    $_SERVER['REQUEST_METHOD'] === 'POST' &&
-    !isset($_POST['resend_verification'])
-) {
-
-    csrf_verify();
-
-    $code = trim($_POST['verification_code'] ?? '');
-
-    if ($code === '') {
-
-        $error = t('code_empty_msg');
-
-    } elseif (!preg_match('/^[0-9]{6}$/', $code)) {
-
-        $error = t('code_format_msg');
-
-    } else {
-
-        /*
-        |--------------------------------------------------------------------------
-        | GET PENDING REGISTRATION
-        |--------------------------------------------------------------------------
-        */
-
-        $query = pg_query_params(
-            $conn,
-            "
-            SELECT
-                verification_id,
-                full_name,
-                student_id,
-                department,
-                email,
-                password_hash,
-                verification_code,
-                expires_at,
-                attempts
+        $stmt = $pdo->prepare("
+            SELECT *
             FROM email_verifications
-            WHERE LOWER(TRIM(email)) = LOWER(TRIM($1))
-            ORDER BY created_at DESC
+            WHERE LOWER(TRIM(email)) = LOWER(TRIM(?))
             LIMIT 1
-            ",
-            [$email]
-        );
+        ");
+        $stmt->execute([$email]);
+        $record = $stmt->fetch(PDO::FETCH_ASSOC);
 
-        if (!$query) {
+        if (!$record) {
 
-            error_log(
-                "Verification lookup failed: " .
-                pg_last_error($conn)
-            );
+            unset($_SESSION['verification_email']);
+            $error = 'Your verification session has expired. Please register again.';
 
-            $error = t('verification_db_error');
+        } elseif (strtotime($record['expires_at']) < time()) {
 
-        } elseif (pg_num_rows($query) === 0) {
+            $pdo->prepare("DELETE FROM email_verifications WHERE LOWER(TRIM(email)) = LOWER(TRIM(?))")
+                ->execute([$email]);
+            unset($_SESSION['verification_email']);
+            $error = 'This verification code has expired. Please register again.';
 
-            $error = t('verification_not_found');
+        } elseif ((int) $record['attempts'] >= $MAX_ATTEMPTS) {
+
+            $pdo->prepare("DELETE FROM email_verifications WHERE LOWER(TRIM(email)) = LOWER(TRIM(?))")
+                ->execute([$email]);
+            unset($_SESSION['verification_email']);
+            $error = 'Too many incorrect attempts. Please register again.';
+
+        } elseif ($entered_code === '' || $entered_code !== (string) $record['verification_code']) {
+
+            $pdo->prepare("UPDATE email_verifications SET attempts = attempts + 1 WHERE LOWER(TRIM(email)) = LOWER(TRIM(?))")
+                ->execute([$email]);
+
+            $remaining = $MAX_ATTEMPTS - ((int) $record['attempts'] + 1);
+
+            $error = $remaining > 0
+                ? "Incorrect code. {$remaining} attempt(s) remaining."
+                : 'Incorrect code. Please register again.';
+
+            if ($remaining <= 0) {
+                $pdo->prepare("DELETE FROM email_verifications WHERE LOWER(TRIM(email)) = LOWER(TRIM(?))")
+                    ->execute([$email]);
+                unset($_SESSION['verification_email']);
+            }
 
         } else {
 
-            $verification = pg_fetch_assoc($query);
+            /* Code correct — create the real account */
 
-            /*
-            |--------------------------------------------------------------------------
-            | CHECK ATTEMPT LIMIT
-            |--------------------------------------------------------------------------
-            */
+            $check_again = $pdo->prepare("SELECT user_id FROM users WHERE LOWER(TRIM(email)) = LOWER(TRIM(?)) OR student_id = ? LIMIT 1");
+            $check_again->execute([$record['email'], $record['student_id']]);
 
-            if ((int)$verification['attempts'] >= 5) {
+            if ($check_again->rowCount() > 0) {
 
-                $error = t('too_many_attempts_msg');
+                $pdo->prepare("DELETE FROM email_verifications WHERE LOWER(TRIM(email)) = LOWER(TRIM(?))")
+                    ->execute([$email]);
+                unset($_SESSION['verification_email']);
+                $error = 'An account with this email or student ID already exists. Please log in instead.';
 
             } else {
 
                 /*
-                |--------------------------------------------------------------------------
-                | CHECK EXPIRATION
-                |--------------------------------------------------------------------------
+                |------------------------------------------------------------
+                | Organizer signups need admin approval before they can log
+                | in, so they land in 'pending' instead of 'active'. Student
+                | signups are unaffected.
+                |------------------------------------------------------------
                 */
 
-                $expires_timestamp =
-                    strtotime($verification['expires_at']);
+                $requested_role = in_array($record['role'] ?? 'student', ['student', 'organizer'], true)
+                    ? $record['role']
+                    : 'student';
 
-                if ($expires_timestamp === false) {
+                $initial_status = $requested_role === 'organizer' ? 'pending' : 'active';
 
-                    $error = t('code_expired_msg');
+                $insert_user = $pdo->prepare("
+                    INSERT INTO users
+                        (full_name, student_id, department, email, password, role, status,
+                         email_notifications, appearance, email_verified, created_at)
+                    VALUES
+                        (?, ?, ?, ?, ?, ?, ?, 1, 'system', 1, NOW())
+                ");
 
-                } elseif (time() > $expires_timestamp) {
+                $insert_user->execute([
+                    $record['full_name'],
+                    $record['student_id'],
+                    $record['department'],
+                    $record['email'],
+                    $record['password_hash'],
+                    $requested_role,
+                    $initial_status,
+                ]);
 
-                    $error = t('code_expired_msg');
+                $pdo->prepare("DELETE FROM email_verifications WHERE LOWER(TRIM(email)) = LOWER(TRIM(?))")
+                    ->execute([$email]);
+
+                unset($_SESSION['verification_email']);
+
+                if ($requested_role === 'organizer') {
+
+                    /* Let every admin know a new organizer needs review */
+
+                    notify_admins(
+                        $pdo,
+                        htmlspecialchars($record['full_name']) . ' has requested an organizer account and is awaiting your approval.',
+                        'organizer_signup'
+                    );
+
+                    $_SESSION['registration_success'] =
+                        'Your organizer account has been created and is awaiting admin approval. ' .
+                        'You will be notified once it has been reviewed.';
 
                 } else {
 
-                    /*
-                    |--------------------------------------------------------------------------
-                    | CHECK CODE
-                    |--------------------------------------------------------------------------
-                    */
+                    $_SESSION['registration_success'] = 'Your account has been verified! You can now log in.';
+                }
 
-                    if (
-                        !hash_equals(
-                            (string)$verification['verification_code'],
-                            (string)$code
-                        )
-                    ) {
+                header("Location: account.php?mode=signin");
+                exit();
+            }
+        }
+    }
 
-                        /*
-                        |--------------------------------------------------------------------------
-                        | INCREASE ATTEMPT COUNT
-                        |--------------------------------------------------------------------------
-                        */
+    /*
+    |======================================================================
+    | RESEND CODE
+    |======================================================================
+    */
+    elseif ($form_action === 'resend_code') {
 
-                        pg_query_params(
-                            $conn,
-                            "
-                            UPDATE email_verifications
-                            SET attempts = attempts + 1
-                            WHERE verification_id = $1
-                            ",
-                            [
-                                $verification['verification_id']
-                            ]
-                        );
+        $stmt = $pdo->prepare("
+            SELECT *
+            FROM email_verifications
+            WHERE LOWER(TRIM(email)) = LOWER(TRIM(?))
+            LIMIT 1
+        ");
+        $stmt->execute([$email]);
+        $record = $stmt->fetch(PDO::FETCH_ASSOC);
 
-                        $remaining =
-                            4 - (int)$verification['attempts'];
+        if (!$record) {
 
-                        if ($remaining < 0) {
-                            $remaining = 0;
-                        }
+            unset($_SESSION['verification_email']);
+            $error = 'Your verification session has expired. Please register again.';
 
-                        $error = sprintf(
-                            t('incorrect_code_msg'),
-                            $remaining
-                        );
+        } else {
 
-                    } else {
+            try {
+                $new_code = (string) random_int(100000, 999999);
+            } catch (Exception $e) {
+                $new_code = null;
+            }
 
-                        /*
-                        |--------------------------------------------------------------------------
-                        | DOUBLE-CHECK EMAIL / STUDENT ID
-                        |--------------------------------------------------------------------------
-                        */
+            if ($new_code === null) {
 
-                        $check_existing = pg_query_params(
-                            $conn,
-                            "
-                            SELECT user_id
-                            FROM users
-                            WHERE
-                                LOWER(TRIM(email)) = LOWER(TRIM($1))
-                                OR student_id = $2
-                            LIMIT 1
-                            ",
-                            [
-                                $verification['email'],
-                                $verification['student_id']
-                            ]
-                        );
+                $error = 'Could not generate a new code. Please try again.';
 
-                        if (!$check_existing) {
+            } else {
 
-                            error_log(
-                                "Final duplicate check failed: " .
-                                pg_last_error($conn)
-                            );
+                $new_expiry = date('Y-m-d H:i:s', time() + (10 * 60));
 
-                            $error = t('unable_to_complete_registration');
+                $pdo->prepare("
+                    UPDATE email_verifications
+                    SET verification_code = ?, expires_at = ?, attempts = 0
+                    WHERE LOWER(TRIM(email)) = LOWER(TRIM(?))
+                ")->execute([$new_code, $new_expiry, $email]);
 
-                        } elseif (pg_num_rows($check_existing) > 0) {
+                $email_message = build_verification_email_html($record['full_name'], $new_code);
 
-                            $error = t('already_registered_msg');
+                $sent = send_notification_email(
+                    $email,
+                    'Verify Your Regis Marie College Account',
+                    $email_message
+                );
 
-                            /*
-                            |--------------------------------------------------------------------------
-                            | DELETE PENDING RECORD
-                            |--------------------------------------------------------------------------
-                            */
-
-                            pg_query_params(
-                                $conn,
-                                "
-                                DELETE FROM email_verifications
-                                WHERE verification_id = $1
-                                ",
-                                [
-                                    $verification['verification_id']
-                                ]
-                            );
-
-                        } else {
-
-                            /*
-                            |--------------------------------------------------------------------------
-                            | CREATE USER ACCOUNT
-                            |--------------------------------------------------------------------------
-                            */
-
-                            $insert_user = pg_query_params(
-                                $conn,
-                                "
-                                INSERT INTO users
-                                (
-                                    full_name,
-                                    student_id,
-                                    department,
-                                    email,
-                                    password,
-                                    role,
-                                    status,
-                                    created_at,
-                                    email_verified
-                                )
-                                VALUES
-                                (
-                                    $1,
-                                    $2,
-                                    $3,
-                                    $4,
-                                    $5,
-                                    'student',
-                                    'active',
-                                    NOW(),
-                                    true
-                                )
-                                RETURNING user_id
-                                ",
-                                [
-                                    $verification['full_name'],
-                                    $verification['student_id'],
-                                    $verification['department'],
-                                    strtolower(
-                                        trim(
-                                            $verification['email']
-                                        )
-                                    ),
-                                    $verification['password_hash']
-                                ]
-                            );
-
-                            if (!$insert_user) {
-
-                                error_log(
-                                    "User creation after verification failed: " .
-                                    pg_last_error($conn)
-                                );
-
-                                $error = t('account_creation_failed');
-
-                            } else {
-
-                                /*
-                                |--------------------------------------------------------------------------
-                                | GET NEW USER ID
-                                |--------------------------------------------------------------------------
-                                */
-
-                                $new_user =
-                                    pg_fetch_assoc($insert_user);
-
-                                /*
-                                |--------------------------------------------------------------------------
-                                | DELETE VERIFICATION RECORD
-                                |--------------------------------------------------------------------------
-                                */
-
-                                pg_query_params(
-                                    $conn,
-                                    "
-                                    DELETE FROM email_verifications
-                                    WHERE verification_id = $1
-                                    ",
-                                    [
-                                        $verification['verification_id']
-                                    ]
-                                );
-
-                                /*
-                                |--------------------------------------------------------------------------
-                                | SEND WELCOME EMAIL
-                                |--------------------------------------------------------------------------
-                                */
-
-                                $welcome_message = build_welcome_email_html(
-                                    $verification['full_name']
-                                );
-
-                                $welcome_sent =
-                                    send_email_deferred(
-                                        $verification['email'],
-                                        'Welcome to Regis Marie College Event System',
-                                        $welcome_message
-                                    );
-
-                                if (!$welcome_sent) {
-
-                                    error_log(
-                                        "Welcome email failed after verification for: " .
-                                        $verification['email']
-                                    );
-                                }
-
-                                /*
-                                |--------------------------------------------------------------------------
-                                | REMOVE SESSION VERIFICATION DATA
-                                |--------------------------------------------------------------------------
-                                */
-
-                                unset($_SESSION['verification_email']);
-
-                                /*
-                                |--------------------------------------------------------------------------
-                                | SUCCESS
-                                |--------------------------------------------------------------------------
-                                */
-
-                                $success = t('account_verified_success');
-                            }
-                        }
-                    }
+                if ($sent) {
+                    $success = 'A new verification code has been sent to your email.';
+                } else {
+                    $error = 'Could not send the verification email. Please try again shortly.';
                 }
             }
         }
     }
 }
-?>
 
-<?php
-$page_title = t('verify_email_title');
+/* Re-fetch expiry for display (may have just been updated above) */
+$expires_at_display = null;
+if (!empty($_SESSION['verification_email'])) {
+    $stmt = $pdo->prepare("SELECT expires_at FROM email_verifications WHERE LOWER(TRIM(email)) = LOWER(TRIM(?)) LIMIT 1");
+    $stmt->execute([$email]);
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    if ($row) {
+        $expires_at_display = $row['expires_at'];
+    }
+}
+
+$page_title = 'Verify Your Email';
 include 'partials/head.php';
 ?>
 
-<div class="min-h-screen flex items-center justify-center bg-slate-100 px-6">
+<div class="min-h-screen flex items-center justify-center bg-rmc-50 px-4 py-10">
 
-    <div class="w-full max-w-md">
+    <div class="w-full max-w-md bg-white rounded-[26px] border border-slate-200 shadow-sm p-8">
 
-        <div class="bg-white rounded-[26px] shadow-2xl border border-slate-200 p-8 sm:p-10">
+        <div class="flex flex-col items-center text-center mb-6">
 
-            <!-- LOGO -->
-
-            <div class="text-center">
-
-                <div class="w-20 h-20 mx-auto rounded-full bg-white border border-slate-200 shadow-md flex items-center justify-center">
-
-                    <img
-                        src="img/logo.webp"
-                        class="w-full h-full object-contain"
-                        alt="Regis Marie College Logo"
-                    >
-
-                </div>
-
-                <h1 class="text-3xl font-bold text-rmc-800 mt-5">
-
-                    <?= t('verify_gmail_heading'); ?>
-
-                </h1>
-
-                <p class="text-slate-500 mt-2">
-
-                    <?= t('verify_desc_sent'); ?>
-
-                </p>
-
-                <p class="font-semibold text-rmc-800 mt-2 break-all">
-
-                    <?= htmlspecialchars(
-                        $email,
-                        ENT_QUOTES,
-                        'UTF-8'
-                    ); ?>
-
-                </p>
-
+            <div class="w-14 h-14 rounded-2xl bg-rmc-800 text-white flex items-center justify-center shadow-lg mb-4">
+                <i class="fa-solid fa-envelope-circle-check text-2xl"></i>
             </div>
 
+            <h1 class="text-2xl font-bold text-slate-900">Verify Your Email</h1>
 
-            <?php if ($error): ?>
+            <p class="text-slate-500 text-sm mt-2">
+                We sent a 6-digit code to
+                <span class="font-semibold text-slate-700"><?= htmlspecialchars($email, ENT_QUOTES, 'UTF-8'); ?></span>.
+                Enter it below to finish creating your account.
+            </p>
 
-                <div class="bg-red-50 border border-red-200 text-red-700 rounded-2xl p-4 mt-6">
+        </div>
 
-                    <?= htmlspecialchars(
-                        $error,
-                        ENT_QUOTES,
-                        'UTF-8'
-                    ); ?>
+        <?php if ($error): ?>
+            <div class="bg-red-50 border border-red-200 text-red-700 rounded-xl p-3 text-sm mb-5">
+                <i class="fa-solid fa-circle-exclamation mr-1"></i>
+                <?= htmlspecialchars($error, ENT_QUOTES, 'UTF-8'); ?>
+            </div>
+        <?php endif; ?>
 
-                </div>
+        <?php if ($success): ?>
+            <div class="bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-xl p-3 text-sm mb-5">
+                <i class="fa-solid fa-circle-check mr-1"></i>
+                <?= htmlspecialchars($success, ENT_QUOTES, 'UTF-8'); ?>
+            </div>
+        <?php endif; ?>
 
-            <?php endif; ?>
+        <?php if (!empty($_SESSION['verification_email'])): ?>
 
+            <form method="POST" action="" class="space-y-4">
+                <?= csrf_field(); ?>
+                <input type="hidden" name="form_action" value="verify_code">
 
-            <?php if ($resend_error): ?>
-
-                <div class="bg-red-50 border border-red-200 text-red-700 rounded-2xl p-4 mt-6">
-
-                    <?= htmlspecialchars(
-                        $resend_error,
-                        ENT_QUOTES,
-                        'UTF-8'
-                    ); ?>
-
-                </div>
-
-            <?php endif; ?>
-
-
-            <?php if ($success): ?>
-
-                <div class="bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-2xl p-4 mt-6">
-
-                    <?= htmlspecialchars(
-                        $success,
-                        ENT_QUOTES,
-                        'UTF-8'
-                    ); ?>
-
-                </div>
-
-                <div class="text-center mt-6">
-
-                    <a
-                        href="login.php"
-                        class="inline-block w-full bg-rmc-800 hover:bg-rmc-900 text-white font-bold py-3 rounded-xl shadow-lg transition"
-                    >
-
-                        <?= t('proceed_to_login'); ?>
-
-                    </a>
-
-                </div>
-
-            <?php else: ?>
-
-                <form method="POST" class="mt-8">
-
-                    <?= csrf_field(); ?>
-
-                    <label class="block text-sm font-semibold text-slate-700">
-
-                        <?= t('verification_code_label'); ?>
-
-                    </label>
-
+                <div>
+                    <label class="block text-xs font-semibold text-slate-500 mb-1">Verification Code</label>
                     <input
                         type="text"
                         name="verification_code"
                         inputmode="numeric"
-                        autocomplete="one-time-code"
+                        pattern="[0-9]*"
                         maxlength="6"
-                        pattern="[0-9]{6}"
                         required
                         autofocus
-                        placeholder="<?= t('verification_code_placeholder'); ?>"
-                        class="mt-2 w-full text-center text-2xl tracking-[0.5em] rounded-xl border border-slate-200 px-5 py-4 bg-slate-50 focus:bg-white focus:ring-4 focus:ring-rmc-200 focus:border-rmc-300 outline-none transition"
+                        placeholder="123456"
+                        class="w-full text-center tracking-[0.5em] text-lg font-bold border border-slate-200 rounded-xl px-4 py-3 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-rmc-300 focus:border-rmc-300 outline-none transition"
                     >
-
-                    <p class="text-xs text-slate-500 text-center mt-3">
-
-                        <?= t('verification_code_expiry_hint'); ?>
-
-                    </p>
-
-                    <button
-                        type="submit"
-                        class="w-full mt-6 bg-rmc-800 hover:bg-rmc-900 hover:scale-[1.02] transition duration-300 text-white font-bold py-3 rounded-xl shadow-lg"
-                    >
-
-                        <?= t('verify_gmail_button'); ?>
-
-                    </button>
-
-                </form>
-
-                <div class="text-center mt-6">
-
-                    <a
-                        href="register.php"
-                        class="text-rmc-800 font-semibold hover:text-rmc-900"
-                    >
-
-                        <?= t('register_again'); ?>
-
-                    </a>
-
                 </div>
 
-                <form method="POST" class="mt-4 text-center">
+                <?php if ($expires_at_display): ?>
+                    <p class="text-xs text-slate-400 text-center">
+                        This code expires at <?= date('h:i A', strtotime($expires_at_display)); ?>.
+                    </p>
+                <?php endif; ?>
 
-                    <?= csrf_field(); ?>
+                <button
+                    type="submit"
+                    class="w-full py-3 rounded-xl text-white font-bold text-sm bg-rmc-800 hover:bg-rmc-900 transition"
+                >
+                    Verify & Create Account
+                </button>
 
-                    <input
-                        type="hidden"
-                        name="resend_verification"
-                        value="1"
-                    >
+            </form>
 
-                    <button
-                        type="submit"
-                        class="text-sm font-semibold text-rmc-800 hover:text-rmc-900 underline"
-                    >
+            <form method="POST" action="" class="mt-3">
+                <?= csrf_field(); ?>
+                <input type="hidden" name="form_action" value="resend_code">
+                <button type="submit" class="w-full py-2.5 rounded-xl text-sm font-semibold text-rmc-800 hover:bg-rmc-50 border border-slate-200 transition">
+                    Resend Code
+                </button>
+            </form>
 
-                        <?= t('resend_verification'); ?>
+        <?php else: ?>
 
-                    </button>
+            <a href="account.php?mode=register" class="block w-full text-center py-3 rounded-xl text-white font-bold text-sm bg-rmc-800 hover:bg-rmc-900 transition">
+                Back to Sign Up
+            </a>
 
-                </form>
+        <?php endif; ?>
 
-            <?php endif; ?>
-
-        </div>
+        <a href="account.php" class="block text-center text-xs text-slate-500 hover:text-slate-700 mt-5">
+            <i class="fa-solid fa-arrow-left mr-1"></i> Back to Login
+        </a>
 
     </div>
 
 </div>
 
-<?php
-include_once __DIR__ . '/partials/dark_mode.php';
-?>
+<?php include 'partials/footer.php'; ?>

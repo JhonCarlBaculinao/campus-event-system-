@@ -12,7 +12,8 @@
 |   $unread_count  (int)     Unread notifications count
 |
 | Renders the mobile overlay, the slide-in mobile sidebar, and the fixed
-| desktop sidebar. Both sidebars share one navigation data source.
+| desktop sidebar (static width — no hover expand). Both sidebars share
+| one navigation data source.
 |--------------------------------------------------------------------------
 */
 
@@ -115,16 +116,10 @@ if ($role === 'student') {
         'label' => t('all_notifications')
     );
 
-    $nav_items['admin_email_settings'] = array(
-        'href'  => 'admin_email_settings.php',
-        'icon'  => 'fa-solid fa-envelope-circle-check',
-        'label' => 'Email Settings'
-    );
-
     $nav_items['admin_settings'] = array(
         'href'  => 'admin_settings.php',
-        'icon'  => 'fa-solid fa-sliders',
-        'label' => t('settings')
+        'icon'  => 'fa-solid fa-shield-halved',
+        'label' => 'System Settings'
     );
 
     $nav_items['email_logs'] = array(
@@ -148,6 +143,10 @@ $nav_account_items = array(
         'label' => t('settings')
     )
 );
+
+/* =========================================================
+   MOBILE NAV RENDERER (unchanged behavior)
+   ========================================================= */
 
 if (!function_exists('rmc_sidebar_nav')) {
 
@@ -193,6 +192,44 @@ if (!function_exists('rmc_sidebar_nav')) {
             $html .=
                 '<a href="' . htmlspecialchars($item['href']) . '" ' .
                 'class="' . $classes . '">' . $inner . '</a>';
+        }
+
+        return $html;
+    }
+}
+
+/* =========================================================
+   DESKTOP SIDEBAR RENDERER (static — icon + label always shown)
+   ========================================================= */
+
+if (!function_exists('rmc_rail_nav')) {
+
+    function rmc_rail_nav($items, $active_page)
+    {
+        $html = '';
+
+        foreach ($items as $key => $item) {
+
+            $active = ($active_page === $key) ? ' active' : '';
+            $badge  = (int) ($item['badge'] ?? 0);
+            $label  = htmlspecialchars($item['label']);
+
+            $badge_html = '';
+
+            if ($badge > 0) {
+                $badge_html =
+                    '<span class="nav-rail-badge">' . $badge . '</span>';
+            }
+
+            $html .=
+                '<a href="' . htmlspecialchars($item['href']) . '" ' .
+                'class="nav-rail-link' . $active . '">' .
+                    '<span class="nav-rail-icon">' .
+                        '<i class="' . htmlspecialchars($item['icon']) . '"></i>' .
+                        $badge_html .
+                    '</span>' .
+                    '<span class="nav-rail-label">' . $label . '</span>' .
+                '</a>';
         }
 
         return $html;
@@ -320,7 +357,7 @@ if (!function_exists('rmc_sidebar_nav')) {
             </div>
 
             <a
-                href="logout.php"
+                    href="logout.php"
                 class="ml-auto text-rmc-300 hover:text-red-400 transition"
                 title="<?= t('logout'); ?>"
                 aria-label="<?= t('logout'); ?>"
@@ -338,42 +375,33 @@ if (!function_exists('rmc_sidebar_nav')) {
 
 
 <!-- =========================================================
-     DESKTOP SIDEBAR
+     DESKTOP SIDEBAR (static width — always expanded, no hover)
      ========================================================= -->
 
-<aside
-    class="desktop-sidebar w-72 hidden lg:flex flex-col bg-rmc-950 text-white shadow-xl fixed left-0 top-0 bottom-0 z-30"
->
+<aside class="nav-rail nav-rail-static" id="desktopSidebar">
 
     <!-- BRAND -->
 
-    <div class="p-6 border-b border-white/10">
+    <div class="nav-rail-brand">
 
-        <div class="flex items-center gap-3">
+        <div class="nav-rail-brand-icon">
 
-            <div
-                class="w-11 h-11 rounded-xl bg-white flex items-center justify-center shadow-lg shrink-0"
+            <img
+                src="img/logo.webp"
+                alt="RMC Logo"
             >
 
-                <img
-                    src="img/logo.webp"
-                    class="w-9 h-9 object-contain"
-                    alt="RMC Logo"
-                >
+        </div>
 
-            </div>
+        <div class="nav-rail-brand-text">
 
-            <div>
+            <h2 class="nav-rail-brand-name">
+                RMC Events
+            </h2>
 
-                <h2 class="font-bold text-lg tracking-tight">
-                    RMC Events
-                </h2>
-
-                <p class="text-xs text-rmc-300">
-                    <?= t('discover_participate_connect'); ?>
-                </p>
-
-            </div>
+            <p class="nav-rail-brand-tagline">
+                <?= t('discover_participate_connect'); ?>
+            </p>
 
         </div>
 
@@ -382,67 +410,56 @@ if (!function_exists('rmc_sidebar_nav')) {
 
     <!-- NAVIGATION -->
 
-    <div class="flex-1 px-5 py-7 overflow-y-auto">
+    <nav class="nav-rail-nav">
 
-        <p
-            class="sidebar-section-label uppercase text-[10px] font-bold text-rmc-300 mb-4 px-3"
-        >
-            <?= t('main_menu'); ?>
-        </p>
+        <div class="nav-rail-section">
 
-        <nav class="space-y-1">
-
-            <?= rmc_sidebar_nav($nav_items, $active_page); ?>
-
-        </nav>
-
-
-        <div class="pt-5 pb-3">
-
-            <p class="sidebar-section-label uppercase text-[10px] font-bold text-rmc-300 px-3">
-                <?= t('account'); ?>
+            <p class="nav-rail-section-label">
+                <?= t('main_menu'); ?>
             </p>
+
+            <?= rmc_rail_nav($nav_items, $active_page); ?>
 
         </div>
 
-        <nav class="space-y-1">
+        <div class="nav-rail-section">
 
-            <?= rmc_sidebar_nav($nav_account_items, $active_page); ?>
+            <p class="nav-rail-section-label">
+                <?= t('account'); ?>
+            </p>
 
-        </nav>
+            <?= rmc_rail_nav($nav_account_items, $active_page); ?>
 
-    </div>
+        </div>
+
+    </nav>
 
 
     <!-- USER -->
 
-    <div class="p-5 border-t border-white/10">
+    <div class="nav-rail-footer">
 
-        <div class="flex items-center gap-3">
+        <div class="nav-rail-user">
 
-            <div
-                class="w-10 h-10 rounded-full bg-rmc-700 flex items-center justify-center font-bold shrink-0"
-            >
-
+            <div class="nav-rail-user-avatar">
                 <?= strtoupper(substr($first_name, 0, 1)); ?>
-
             </div>
 
-            <div class="min-w-0">
+            <div class="nav-rail-user-info">
 
-                <p class="text-sm font-semibold truncate">
+                <p class="nav-rail-user-name">
                     <?= htmlspecialchars($full_name); ?>
                 </p>
 
-                <p class="text-xs text-rmc-300">
+                <p class="nav-rail-user-role">
                     <?= htmlspecialchars($role_label); ?>
                 </p>
 
             </div>
 
             <a
-                href="logout.php"
-                class="ml-auto text-rmc-300 hover:text-red-400 transition"
+                    href="logout.php"
+                class="nav-rail-logout"
                 title="<?= t('logout'); ?>"
                 aria-label="<?= t('logout'); ?>"
             >

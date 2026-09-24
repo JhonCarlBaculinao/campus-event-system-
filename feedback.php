@@ -1,6 +1,5 @@
 <?php
 
-session_start();
 
 include 'db_connect.php';
 require 'lang.php';
@@ -31,13 +30,10 @@ if ($event_id <= 0) {
     die("Invalid event.");
 }
 
-$event_result = pg_query_params(
-    $conn,
-    "SELECT * FROM events WHERE event_id = $1",
-    array($event_id)
-);
+$event_result = $pdo->prepare("SELECT * FROM events WHERE event_id = ?");
+$event_result->execute([$event_id]);
 
-$event = pg_fetch_assoc($event_result);
+$event = $event_result->fetch(PDO::FETCH_ASSOC);
 
 if (!$event) {
     die("Event not found.");
@@ -55,19 +51,17 @@ $attended = false;
 
 if ($role === 'student') {
 
-    $attend_check = pg_query_params(
-        $conn,
-        "SELECT a.attendance_id
+    $attend_check = $pdo->prepare("SELECT a.attendance_id
          FROM attendance a
          JOIN registrations r
            ON a.registration_id = r.registration_id
-         WHERE r.event_id = $1
-           AND r.user_id = $2
-         LIMIT 1",
-        array($event_id, $user_id)
-    );
+         WHERE r.event_id = ?
+           AND r.user_id = ?
+           AND a.verified = 1
+         LIMIT 1");
+    $attend_check->execute([$event_id, $user_id]);
 
-    $attended = pg_num_rows($attend_check) > 0;
+    $attended = $attend_check->rowCount() > 0;
 }
 
 /*
@@ -116,20 +110,18 @@ if (
             | We intentionally do NOT update previous feedback.
             */
 
-            $insert_result = pg_query_params(
-                $conn,
-                "INSERT INTO feedback
+            $insert_stmt = $pdo->prepare("INSERT INTO feedback
                     (event_id, user_id, rating, comment, is_anonymous)
                  VALUES
-                    ($1, $2, $3, $4, $5)",
-                array(
-                    $event_id,
-                    $user_id,
-                    $rating,
-                    $comment,
-                    $is_anonymous ? 'true' : 'false'
-                )
-            );
+                    (?, ?, ?, ?, ?)");
+
+            $insert_result = $insert_stmt->execute([
+                $event_id,
+                $user_id,
+                $rating,
+                $comment,
+                $is_anonymous ? 1 : 0
+            ]);
 
             if ($insert_result) {
 
@@ -149,9 +141,7 @@ if (
 |--------------------------------------------------------------------------
 */
 
-$all_feedback = pg_query_params(
-    $conn,
-    "SELECT
+$all_feedback = $pdo->prepare("SELECT
         f.feedback_id,
         f.rating,
         f.comment,
@@ -161,10 +151,9 @@ $all_feedback = pg_query_params(
      FROM feedback f
      JOIN users u
        ON f.user_id = u.user_id
-     WHERE f.event_id = $1
-     ORDER BY f.created_at DESC",
-    array($event_id)
-);
+     WHERE f.event_id = ?
+     ORDER BY f.created_at DESC");
+$all_feedback->execute([$event_id]);
 
 /*
 |--------------------------------------------------------------------------
@@ -172,17 +161,13 @@ $all_feedback = pg_query_params(
 |--------------------------------------------------------------------------
 */
 
-$avg_result = pg_fetch_assoc(
-    pg_query_params(
-        $conn,
-        "SELECT
-            ROUND(AVG(rating)::numeric, 1) AS avg_rating,
+$avg_stmt = $pdo->prepare("SELECT
+            ROUND(AVG(rating), 1) AS avg_rating,
             COUNT(*) AS total
          FROM feedback
-         WHERE event_id = $1",
-        array($event_id)
-    )
-);
+         WHERE event_id = ?");
+$avg_stmt->execute([$event_id]);
+$avg_result = $avg_stmt->fetch(PDO::FETCH_ASSOC);
 
 $avg_rating = $avg_result['avg_rating'] ?? null;
 $total_feedback = (int) ($avg_result['total'] ?? 0);
@@ -192,28 +177,15 @@ $total_feedback = (int) ($avg_result['total'] ?? 0);
    UNREAD COUNT + RECENT NOTIFICATIONS (shared header)
    ========================================================= */
 
-$unread_count = (int) pg_fetch_result(
-    pg_query_params(
-        $conn,
-        "SELECT COUNT(*)
+$unread_stmt = $pdo->prepare("SELECT COUNT(*)
          FROM notifications
-         WHERE user_id = $1
-           AND is_read = false",
-        array($user_id)
-    ),
-    0,
-    0
-);
+         WHERE user_id = ?
+           AND is_read = 0");
+$unread_stmt->execute([$user_id]);
+$unread_count = (int) $unread_stmt->fetchColumn();
 
-$recent_notifications = pg_query_params(
-    $conn,
-    "SELECT notification_id, type, message, is_read, created_at
-     FROM notifications
-     WHERE user_id = $1
-     ORDER BY created_at DESC
-     LIMIT 5",
-    array($user_id)
-);
+$recent_notifications = $pdo->prepare("SELECT notification_id, type, message, is_read, created_at FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 5");
+$recent_notifications->execute([$user_id]);
 
 
 /* =========================================================
@@ -303,7 +275,7 @@ $active_page = '';
         </div>
 
         <a
-            href="events.php"
+                href="events.php"
             class="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-white hover:bg-rmc-50 border border-rmc-200 text-rmc-800 font-semibold text-sm shrink-0 self-start sm:self-auto"
         >
 
@@ -536,7 +508,7 @@ $active_page = '';
 
     </h2>
 
-    <?php if (pg_num_rows($all_feedback) === 0): ?>
+    <?php if ($all_feedback->rowCount() === 0): ?>
 
         <div class="text-center py-12 text-slate-400">
 
@@ -558,7 +530,7 @@ $active_page = '';
 
         <div class="space-y-5">
 
-            <?php while ($fb = pg_fetch_assoc($all_feedback)): ?>
+            <?php while ($fb = $all_feedback->fetch(PDO::FETCH_ASSOC)): ?>
 
                 <div class="border border-slate-100 rounded-2xl p-5 bg-slate-50/50">
 
@@ -566,7 +538,7 @@ $active_page = '';
 
                         <span class="font-semibold text-slate-800">
 
-                            <?php if ($fb['is_anonymous'] === 't' || $fb['is_anonymous'] === true): ?>
+                            <?php if ($fb['is_anonymous'] == 1 || $fb['is_anonymous'] === 't' || $fb['is_anonymous'] === true): ?>
 
                                 <i class="fa-solid fa-user-secret mr-1 text-slate-500"></i>
 

@@ -1,0 +1,5 @@
+config.local.php
+email_config.local.php
+.env
+.env.*
+!.env.example

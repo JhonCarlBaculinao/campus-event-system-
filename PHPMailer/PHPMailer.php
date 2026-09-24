@@ -3834,7 +3834,7 @@ class PHPMailer
             } else {
                 // PHP 8.3+ already interprets underscores as spaces. Remove additional
                 // linear whitespace between adjacent encoded words to avoid double spacing.
-                $value = preg_replace('/(\?=)\s+(=\?)/', '$1$2', $value);
+                $value = preg_replace('/(\?=)\s+(=\?)/', '??', $value);
             }
             // Decode the header value
             $value = mb_decode_mimeheader($value);

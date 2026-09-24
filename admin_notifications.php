@@ -1,6 +1,5 @@
 <?php
 
-session_start();
 
 include 'db_connect.php';
 require 'lang.php';
@@ -42,13 +41,10 @@ if (
 
     } else {
 
-        $result = pg_query_params(
-            $conn,
-            "DELETE FROM notifications WHERE notification_id = $1",
-            array($notif_id)
-        );
+        $result = $pdo->prepare("DELETE FROM notifications WHERE notification_id = ?");
+        $result->execute(array($notif_id));
 
-        if ($result && pg_affected_rows($result) > 0) {
+        if ($result && $result->rowCount() > 0) {
             $success = t('notification_deleted');
         } else {
             $error = t('notification_not_found');
@@ -83,23 +79,13 @@ if (
 
     } else {
 
-        $placeholders = array();
-        $params = array();
-
-        foreach ($ids as $i => $id) {
-            $placeholders[] = '$' . ($i + 1);
-            $params[] = $id;
-        }
-
+        $placeholders = array_fill(0, count($ids), '?');
         $in_clause = implode(',', $placeholders);
 
-        $result = pg_query_params(
-            $conn,
-            "DELETE FROM notifications WHERE notification_id IN ($in_clause)",
-            $params
-        );
+        $result = $pdo->prepare("DELETE FROM notifications WHERE notification_id IN ($in_clause)");
+        $result->execute($ids);
 
-        $deleted = $result ? pg_affected_rows($result) : 0;
+        $deleted = $result ? $result->rowCount() : 0;
 
         if ($deleted > 0) {
             $success = sprintf(t('notifications_deleted'), $deleted);
@@ -140,18 +126,15 @@ $offset = ($page - 1) * $per_page;
 
 $where_clauses = array();
 $params = array();
-$param_idx = 1;
 
 if ($filter_role !== 'all' && in_array($filter_role, ['student', 'organizer', 'admin'])) {
-    $where_clauses[] = "u.role = \$$param_idx";
+    $where_clauses[] = "u.role = ?";
     $params[] = $filter_role;
-    $param_idx++;
 }
 
 if (!empty($search)) {
-    $where_clauses[] = "n.message ILIKE \$$param_idx";
+    $where_clauses[] = "n.message LIKE ?";
     $params[] = '%' . $search . '%';
-    $param_idx++;
 }
 
 $where_sql = '';
@@ -173,8 +156,9 @@ $count_sql = "
     $where_sql
 ";
 
-$count_result = pg_query_params($conn, $count_sql, $params);
-$total_notifications = (int) pg_fetch_result($count_result, 0, 'total');
+$count_result = $pdo->prepare($count_sql);
+$count_result->execute($params);
+$total_notifications = (int) $count_result->fetchColumn();
 
 
 /*
@@ -192,7 +176,8 @@ $query_sql = "
     LIMIT $per_page OFFSET $offset
 ";
 
-$notifications = pg_query_params($conn, $query_sql, $params);
+$notifications = $pdo->prepare($query_sql);
+$notifications->execute($params);
 
 
 /*
@@ -201,35 +186,15 @@ $notifications = pg_query_params($conn, $query_sql, $params);
 |--------------------------------------------------------------------------
 */
 
-$summary_total = (int) pg_fetch_result(
-    pg_query($conn, "SELECT COUNT(*) FROM notifications"),
-    0,
-    0
-);
+$summary_total = (int) $pdo->query("SELECT COUNT(*) FROM notifications")->fetchColumn();
 
-$summary_unread = (int) pg_fetch_result(
-    pg_query($conn, "SELECT COUNT(*) FROM notifications WHERE is_read = false"),
-    0,
-    0
-);
+$summary_unread = (int) $pdo->query("SELECT COUNT(*) FROM notifications WHERE is_read = false")->fetchColumn();
 
-$summary_students = (int) pg_fetch_result(
-    pg_query($conn, "SELECT COUNT(*) FROM notifications n JOIN users u ON n.user_id = u.user_id WHERE u.role = 'student'"),
-    0,
-    0
-);
+$summary_students = (int) $pdo->query("SELECT COUNT(*) FROM notifications n JOIN users u ON n.user_id = u.user_id WHERE u.role = 'student'")->fetchColumn();
 
-$summary_organizers = (int) pg_fetch_result(
-    pg_query($conn, "SELECT COUNT(*) FROM notifications n JOIN users u ON n.user_id = u.user_id WHERE u.role = 'organizer'"),
-    0,
-    0
-);
+$summary_organizers = (int) $pdo->query("SELECT COUNT(*) FROM notifications n JOIN users u ON n.user_id = u.user_id WHERE u.role = 'organizer'")->fetchColumn();
 
-$summary_admins = (int) pg_fetch_result(
-    pg_query($conn, "SELECT COUNT(*) FROM notifications n JOIN users u ON n.user_id = u.user_id WHERE u.role = 'admin'"),
-    0,
-    0
-);
+$summary_admins = (int) $pdo->query("SELECT COUNT(*) FROM notifications n JOIN users u ON n.user_id = u.user_id WHERE u.role = 'admin'")->fetchColumn();
 
 $total_pages = max(1, (int) ceil($total_notifications / $per_page));
 
@@ -291,28 +256,15 @@ function notif_type_badge($type)
 $full_name = $_SESSION['full_name'] ?? '';
 $first_name = explode(' ', trim($full_name))[0];
 
-$unread_count = (int) pg_fetch_result(
-    pg_query_params(
-        $conn,
-        "SELECT COUNT(*)
-         FROM notifications
-         WHERE user_id = $1
-           AND is_read = false",
-        array($admin_id)
-    ),
-    0,
-    0
-);
-
-$recent_notifications = pg_query_params(
-    $conn,
-    "SELECT notification_id, type, message, is_read, created_at
+$unread_stmt = $pdo->prepare("SELECT COUNT(*)
      FROM notifications
-     WHERE user_id = $1
-     ORDER BY created_at DESC
-     LIMIT 5",
-    array($admin_id)
-);
+     WHERE user_id = ?
+       AND is_read = false");
+$unread_stmt->execute([$admin_id]);
+$unread_count = (int) $unread_stmt->fetchColumn();
+
+$recent_notifications = $pdo->prepare("SELECT notification_id, type, message, is_read, created_at FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 5");
+$recent_notifications->execute([$admin_id]);
 
 $role_label  = 'Administrator';
 $page_title  = t('notification_management');
@@ -580,8 +532,8 @@ function build_query_string($overrides = array())
 
             <?php if (!empty($search) || $filter_role !== 'all'): ?>
 
-                <a
-                    href="admin_notifications.php"
+                    <a
+                        href="admin_notifications.php"
                     class="border border-slate-200 px-4 py-2 rounded-xl text-sm text-slate-600 hover:bg-rmc-50 transition"
                 >
 
@@ -683,7 +635,7 @@ function build_query_string($overrides = array())
 
             <tbody>
 
-                <?php if (pg_num_rows($notifications) === 0): ?>
+                <?php if ($notifications->rowCount() === 0): ?>
 
                     <tr>
 
@@ -711,7 +663,7 @@ function build_query_string($overrides = array())
 
                 <?php endif; ?>
 
-                <?php while ($row = pg_fetch_assoc($notifications)): ?>
+                <?php while ($row = $notifications->fetch(PDO::FETCH_ASSOC)): ?>
 
                     <tr class="border-b border-slate-100 hover:bg-rmc-50/40 transition">
 
@@ -720,7 +672,7 @@ function build_query_string($overrides = array())
                                 type="checkbox"
                                 name="notif_ids[]"
                                 value="<?= (int) $row['notification_id']; ?>"
-                                data-notif-message="<?= htmlspecialchars($row['message'], ENT_QUOTES); ?>"
+                                data-notif-message="<?= htmlspecialchars($row['message'] ?? '', ENT_QUOTES); ?>"
                                 class="notif-checkbox w-4 h-4 rounded border-slate-300 text-rmc-600 focus:ring-rmc-500 cursor-pointer"
                                 onchange="updateBulkNotifBar();"
                             >
@@ -754,9 +706,9 @@ function build_query_string($overrides = array())
 
                         </td>
 
-                        <td class="px-6 py-5 text-slate-600 text-sm max-w-xs truncate" title="<?= htmlspecialchars($row['message']); ?>">
+                        <td class="px-6 py-5 text-slate-600 text-sm max-w-xs truncate" title="<?= htmlspecialchars($row['message'] ?? ''); ?>">
 
-                            <?= htmlspecialchars(mb_strimwidth($row['message'], 0, 80, '...')); ?>
+                            <?= htmlspecialchars(mb_strimwidth($row['message'] ?? '', 0, 80, '...')); ?>
 
                         </td>
 
@@ -852,8 +804,8 @@ function build_query_string($overrides = array())
 
                 <?php if ($page > 1): ?>
 
-                    <a
-                        href="?<?= build_query_string(['page' => $page - 1]); ?>"
+                        <a
+                            href="?<?= build_query_string(['page' => $page - 1]); ?>"
                         class="border border-slate-200 px-4 py-2 rounded-xl text-sm text-slate-600 hover:bg-rmc-50 transition"
                     >
 
@@ -873,8 +825,8 @@ function build_query_string($overrides = array())
 
                     <?php else: ?>
 
-                        <a
-                            href="?<?= build_query_string(['page' => $i]); ?>"
+                            <a
+                                href="?<?= build_query_string(['page' => $i]); ?>"
                             class="border border-slate-200 px-4 py-2 rounded-xl text-sm text-slate-600 hover:bg-rmc-50 transition"
                         >
                             <?= $i; ?>
@@ -886,8 +838,8 @@ function build_query_string($overrides = array())
 
                 <?php if ($page < $total_pages): ?>
 
-                    <a
-                        href="?<?= build_query_string(['page' => $page + 1]); ?>"
+                        <a
+                            href="?<?= build_query_string(['page' => $page + 1]); ?>"
                         class="border border-slate-200 px-4 py-2 rounded-xl text-sm text-slate-600 hover:bg-rmc-50 transition"
                     >
 
@@ -950,7 +902,7 @@ function build_query_string($overrides = array())
                 </p>
 
                 <p id="confirmModalItemName" class="font-bold text-slate-900 break-words">
-                    —
+                    &nbsp;
                 </p>
 
             </div>
@@ -1005,7 +957,7 @@ function openConfirmModal(opts) {
 
     document.getElementById('confirmModalItemLabel').className = 'text-[10px] font-bold uppercase tracking-wide text-red-500 mb-1';
     document.getElementById('confirmModalItemLabel').textContent = opts.itemLabel || '';
-    document.getElementById('confirmModalItemName').textContent = opts.itemName || '—';
+    document.getElementById('confirmModalItemName').textContent = opts.itemName || '\u00A0';
 
     var btn = document.getElementById('confirmModalConfirmBtn');
     btn.className = 'flex-1 bg-red-700 hover:bg-red-800 text-white font-bold px-5 py-3 rounded-xl transition inline-flex items-center justify-center gap-2';

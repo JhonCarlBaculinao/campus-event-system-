@@ -1,5 +1,4 @@
 <?php
-session_start();
 include 'db_connect.php';
 require 'lang.php';
 
@@ -15,56 +14,43 @@ if (!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'admin') {
 $search = isset($_GET['search']) ? trim($_GET['search']) : '';
 
 if (!empty($search)) {
-    $email_logs = pg_query_params($conn,
-        "SELECT * FROM email_logs WHERE recipient_email ILIKE $1 OR subject ILIKE $1 ORDER BY created_at DESC",
-        array('%' . $search . '%')
-    );
+    $email_logs = $pdo->prepare("SELECT * FROM email_logs WHERE recipient_email LIKE ? OR subject LIKE ? ORDER BY created_at DESC");
+    $term = '%' . $search . '%';
+    $email_logs->execute([$term, $term]);
 } else {
-    $email_logs = pg_query($conn, "SELECT * FROM email_logs ORDER BY created_at DESC");
+    $email_logs = $pdo->query("SELECT * FROM email_logs ORDER BY created_at DESC");
 }
 
 // ==========================
 // DASHBOARD COUNTS
 // ==========================
 
-$total_result = pg_query($conn, "
+$total_result = $pdo->query("
     SELECT COUNT(*) AS total
     FROM email_logs
 ");
 
-$total_emails = pg_fetch_assoc($total_result)['total'];
+$total_emails = $total_result->fetch(PDO::FETCH_ASSOC)['total'];
 
 
-$sent_result = pg_query($conn, "
+$sent_result = $pdo->query("
     SELECT COUNT(*) AS total
     FROM email_logs
     WHERE status='Sent'
 ");
 
-$total_sent = pg_fetch_assoc($sent_result)['total'];
+$total_sent = $sent_result->fetch(PDO::FETCH_ASSOC)['total'];
 
 
-$failed_result = pg_query($conn, "
+$failed_result = $pdo->query("
     SELECT COUNT(*) AS total
     FROM email_logs
     WHERE status='Failed'
 ");
 
-$total_failed = pg_fetch_assoc($failed_result)['total'];
+$total_failed = $failed_result->fetch(PDO::FETCH_ASSOC)['total'];
 
 
-// ==========================
-// STATUS BADGE
-// ==========================
-
-function status_badge($status)
-{
-    if ($status == "Sent") {
-        return "bg-green-100 text-green-700";
-    }
-
-    return "bg-red-100 text-red-700";
-}
 
 
 // ==========================
@@ -75,28 +61,11 @@ $user_id = (int) $_SESSION['user_id'];
 $full_name = $_SESSION['full_name'] ?? '';
 $first_name = explode(' ', trim($full_name))[0];
 
-$unread_count = (int) pg_fetch_result(
-    pg_query_params(
-        $conn,
-        "SELECT COUNT(*)
-         FROM notifications
-         WHERE user_id = $1
-           AND is_read = false",
-        array($user_id)
-    ),
-    0,
-    0
-);
+$unread_stmt = $pdo->prepare("SELECT COUNT(*) FROM notifications WHERE user_id = ? AND is_read = false");
+$unread_stmt->execute([$user_id]);
+$unread_count = (int)$unread_stmt->fetchColumn();
 
-$recent_notifications = pg_query_params(
-    $conn,
-    "SELECT notification_id, type, message, is_read, created_at
-     FROM notifications
-     WHERE user_id = $1
-     ORDER BY created_at DESC
-     LIMIT 5",
-    array($user_id)
-);
+$recent_notifications = $pdo->prepare("SELECT notification_id, type, message, is_read, created_at FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 5"); $recent_notifications->execute([$user_id]);
 
 $role_label  = 'Administrator';
 $page_title  = t('title_email_logs');
@@ -284,7 +253,7 @@ $active_page = 'email_logs';
             <?php if (!empty($search)): ?>
 
                 <a
-                    href="admin_email_logs.php"
+                        href="admin_email_logs.php"
                     class="border border-slate-200 px-4 py-2 rounded-xl text-sm text-slate-600 hover:bg-rmc-50 transition"
                 >
 
@@ -333,9 +302,9 @@ $active_page = 'email_logs';
 
             <tbody>
 
-                <?php if (pg_num_rows($email_logs) > 0): ?>
+                <?php if ($email_logs->rowCount() > 0): ?>
 
-                    <?php while ($row = pg_fetch_assoc($email_logs)): ?>
+                    <?php while ($row = $email_logs->fetch(PDO::FETCH_ASSOC)): ?>
 
                         <tr class="border-b border-slate-100 hover:bg-rmc-50/40 transition">
 

@@ -1,6 +1,5 @@
 <?php
 
-session_start();
 
 include 'db_connect.php';
 require 'lang.php';
@@ -18,32 +17,23 @@ $event_id = $_GET['id'] ?? null;
 $organizer_id = $_SESSION['user_id'];
 
 // Make sure this event actually belongs to the logged-in organizer
-$owner_check = pg_query_params(
-    $conn,
-    "SELECT event_id
+$owner_check = $pdo->prepare("SELECT *
      FROM events
-     WHERE event_id=$1
-     AND organizer_id=$2",
-    array($event_id, $organizer_id)
-);
+     WHERE event_id=?
+     AND organizer_id=?
+     LIMIT 1");
+$owner_check->execute([$event_id, $organizer_id]);
+$event = $owner_check->fetch(PDO::FETCH_ASSOC);
 
-if (pg_num_rows($owner_check) === 0) {
+if (!$event) {
     http_response_code(403);
     die("Access denied. You can only edit your own events.");
 }
 
 // How many students are already registered - the limit can't go below this
-$current_regs = pg_fetch_result(
-    pg_query_params(
-        $conn,
-        "SELECT COUNT(*)
-         FROM registrations
-         WHERE event_id=$1",
-        array($event_id)
-    ),
-    0,
-    0
-);
+$stmt = $pdo->prepare("SELECT COUNT(*) FROM registrations WHERE event_id=?");
+$stmt->execute([$event_id]);
+$current_regs = (int)$stmt->fetchColumn();
 
 $error = '';
 
@@ -76,7 +66,7 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
     } else {
 
         /* Handle poster upload */
-        $poster_image = $event['poster_image'];
+        $poster_image = $event['poster_image'] ?? null;
 
         if (isset($_FILES['poster_image']) && $_FILES['poster_image']['error'] === UPLOAD_ERR_OK) {
 
@@ -104,15 +94,16 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
                 };
 
                 $new_filename = 'poster_' . bin2hex(random_bytes(16)) . '.' . $ext;
-                $upload_dir = 'img/';
+                $upload_dir = __DIR__ . '/img/';
                 $dest = $upload_dir . $new_filename;
 
                 if (move_uploaded_file($file_tmp, $dest)) {
 
                     // Delete old poster if exists
                     if (!empty($event['poster_image'])) {
-                        $old_path = $upload_dir . $event['poster_image'];
-                        if (file_exists($old_path)) {
+                        $old_name = basename((string) $event['poster_image']);
+                        $old_path = __DIR__ . '/img/' . $old_name;
+                        if (is_file($old_path)) {
                             @unlink($old_path);
                         }
                     }
@@ -126,36 +117,32 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
         }
 
         if (empty($error)) {
-            pg_query_params(
-                $conn,
+$update = $pdo->prepare("UPDATE events
+                 SET title=?,
+                     description=?,
+                     category=?,
+                     event_date=?,
+                     start_time=?,
+                     end_time=?,
+                     venue=?,
+                     registration_limit=?,
+                     poster_image=?
+                 WHERE event_id=?
+                 AND organizer_id=?");
 
-                "UPDATE events
-                 SET title=$1,
-                     description=$2,
-                     category=$3,
-                     event_date=$4,
-                     start_time=$5,
-                     end_time=$6,
-                     venue=$7,
-                     registration_limit=$8,
-                     poster_image=$9
-                 WHERE event_id=$10
-                 AND organizer_id=$11",
-
-                array(
-                    $title,
-                    $description,
-                    $category,
-                    $event_date,
-                    $start_time,
-                    $end_time,
-                    $venue,
-                    $registration_limit,
-                    $poster_image,
-                    $event_id,
-                    $organizer_id
-                )
-            );
+            $update->execute([
+                $title,
+                $description,
+                $category,
+                $event_date,
+                $start_time,
+                $end_time,
+                $venue,
+                $registration_limit,
+                $poster_image,
+                $event_id,
+                $organizer_id
+            ]);
 
             header("Location: dashboard.php");
             exit();
@@ -163,43 +150,17 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
     }
 }
 
-$result = pg_query_params(
-    $conn,
-    "SELECT *
-     FROM events
-     WHERE event_id=$1",
-    array($event_id)
-);
-
-$event = pg_fetch_assoc($result);
-
+// $event was loaded and ownership-checked before processing the form.
 
 /* =========================================================
    UNREAD COUNT + RECENT NOTIFICATIONS (shared header)
    ========================================================= */
 
-$unread_count = (int) pg_fetch_result(
-    pg_query_params(
-        $conn,
-        "SELECT COUNT(*)
-         FROM notifications
-         WHERE user_id = $1
-           AND is_read = false",
-        array($_SESSION['user_id'])
-    ),
-    0,
-    0
-);
+$unread_stmt = $pdo->prepare("SELECT COUNT(*) FROM notifications WHERE user_id = ? AND is_read = 0");
+$unread_stmt->execute([$_SESSION['user_id']]);
+$unread_count = (int) $unread_stmt->fetchColumn();
 
-$recent_notifications = pg_query_params(
-    $conn,
-    "SELECT notification_id, type, message, is_read, created_at
-     FROM notifications
-     WHERE user_id = $1
-     ORDER BY created_at DESC
-     LIMIT 5",
-    array($_SESSION['user_id'])
-);
+$recent_notifications = $pdo->prepare("SELECT notification_id, type, message, is_read, created_at FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 5"); $recent_notifications->execute([$_SESSION['user_id']]);
 
 
 /* =========================================================
@@ -458,7 +419,7 @@ $active_page = '';
         <div class="flex flex-col sm:flex-row justify-end gap-4 pt-4">
 
             <a
-                href="dashboard.php"
+                    href="dashboard.php"
                 class="inline-flex items-center justify-center gap-2 px-6 py-3 rounded-xl bg-white border border-rmc-200 text-rmc-800 hover:bg-rmc-50 font-semibold transition"
             >
 

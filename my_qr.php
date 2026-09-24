@@ -1,6 +1,5 @@
 <?php
 
-session_start();
 
 require 'db_connect.php';
 require 'lang.php';
@@ -34,9 +33,7 @@ $first_name = explode(' ', trim($full_name))[0];
 |--------------------------------------------------------------------------
 */
 
-$query = pg_query_params(
-    $conn,
-    "
+$query = $pdo->prepare("
     SELECT
         r.registration_id,
         r.qr_code,
@@ -62,18 +59,17 @@ $query = pg_query_params(
     LEFT JOIN attendance a
         ON a.registration_id = r.registration_id
 
-    WHERE r.user_id = $1
+    WHERE r.user_id = ?
 
     ORDER BY e.event_date ASC, e.start_time ASC
-    ",
-    array($student_id)
-);
+");
+$query->execute([$student_id]);
 
 if (!$query) {
 
     error_log(
         "My QR query failed: " .
-        pg_last_error($conn)
+        ($pdo->errorInfo()[2] ?? '')
     );
 
     die("Unable to load your QR codes.");
@@ -86,7 +82,7 @@ if (!$query) {
 
 $qr_rows = array();
 
-while ($row = pg_fetch_assoc($query)) {
+while ($row = $query->fetch(PDO::FETCH_ASSOC)) {
     $qr_rows[] = $row;
 }
 
@@ -95,28 +91,17 @@ while ($row = pg_fetch_assoc($query)) {
    NOTIFICATION DATA (for the shared header bell)
    ========================================================= */
 
-$unread_count = (int) pg_fetch_result(
-    pg_query_params(
-        $conn,
-        "SELECT COUNT(*)
-         FROM notifications
-         WHERE user_id = $1
-           AND is_read = false",
-        array($student_id)
-    ),
-    0,
-    0
-);
-
-$recent_notifications = pg_query_params(
-    $conn,
-    "SELECT notification_id, type, message, is_read, created_at
+$unread_stmt = $pdo->prepare("SELECT COUNT(*)
      FROM notifications
-     WHERE user_id = $1
-     ORDER BY created_at DESC
-     LIMIT 5",
-    array($student_id)
-);
+     WHERE user_id = ?
+       AND is_read = 0");
+
+$unread_stmt->execute([$student_id]);
+
+$unread_count = (int) $unread_stmt->fetchColumn();
+
+$recent_notifications = $pdo->prepare("SELECT notification_id, type, message, is_read, created_at FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 5");
+$recent_notifications->execute([$student_id]);
 
 /* =========================================================
    QR PAYLOADS (registration_id => qr_code for the modal)
@@ -272,7 +257,7 @@ var QR_INSTANCES = {};
         </p>
 
         <a
-            href="events.php"
+                href="events.php"
             class="inline-flex items-center gap-2 bg-rmc-800 hover:bg-rmc-900 text-white px-6 py-3 rounded-xl font-semibold transition"
         >
 
@@ -582,9 +567,9 @@ $js_attendance_title = json_encode(
                 document.getElementById("qrcode-<?= (int) $row['registration_id']; ?>"),
                 {
                     text: <?= json_encode($qr_payloads[(string) $row['registration_id']], JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>,
-                    width: 220,
-                    height: 220,
-                    correctLevel: QRCode.CorrectLevel.H
+                    width: 300,
+                    height: 300,
+                    correctLevel: QRCode.CorrectLevel.L
                 }
             );
 
@@ -781,9 +766,9 @@ function renderModalQr() {
         codeBox,
         {
             text: QR_DATA[String(QR_MODAL_CTX.rid)] || '',
-            width: 320,
-            height: 320,
-            correctLevel: QRCode.CorrectLevel.H
+            width: 360,
+            height: 360,
+            correctLevel: QRCode.CorrectLevel.L
         }
     );
 
@@ -1029,9 +1014,9 @@ function printQRCode(qrId, eventTitle) {
                     document.getElementById('print-qr'),
                     {
                         text: ${JSON.stringify(STATIC_CODES[regId])},
-                        width: 300,
-                        height: 300,
-                        correctLevel: QRCode.CorrectLevel.H
+                        width: 350,
+                        height: 350,
+                        correctLevel: QRCode.CorrectLevel.L
                     }
                 );
             <\/script>

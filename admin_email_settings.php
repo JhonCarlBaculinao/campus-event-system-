@@ -1,6 +1,5 @@
 <?php
 
-session_start();
 
 include 'db_connect.php';
 require 'lang.php';
@@ -42,15 +41,10 @@ if (
 
     } else {
 
-        $current_result = pg_query_params(
-            $conn,
-            "SELECT user_id, email_notifications, full_name
-             FROM users
-             WHERE user_id = $1",
-            array($target_id)
-        );
+$current_result = $pdo->prepare("SELECT user_id, email_notifications, full_name FROM users WHERE user_id = ?");
+$current_result->execute([$target_id]);
 
-        $current = pg_fetch_assoc($current_result);
+$current = $current_result->fetch(PDO::FETCH_ASSOC);
 
         if (!$current) {
 
@@ -59,19 +53,15 @@ if (
         } else {
 
             $new_value =
-                ($current['email_notifications'] ?? 'f') === 't'
-                ? 'false'
-                : 'true';
+                ($current['email_notifications'] === true || $current['email_notifications'] === 't')
+                ? false
+                : true;
 
-            pg_query_params(
-                $conn,
-                "UPDATE users
-                 SET email_notifications = $1
-                 WHERE user_id = $2",
-                array($new_value, $target_id)
-            );
+$pdo->prepare("UPDATE users
+     SET email_notifications = ?
+     WHERE user_id = ?")->execute([$new_value ? 1 : 0, $target_id]);
 
-            $label = $new_value === 'true' ? 'enabled' : 'disabled';
+            $label = $new_value === true ? 'enabled' : 'disabled';
             $success = 'Email notifications ' . $label . ' for ' .
                 htmlspecialchars($current['full_name']) . '.';
         }
@@ -107,12 +97,13 @@ $where   = [];
 $params  = [];
 
 if (!empty($search)) {
-    $where[]  = "(full_name ILIKE '%' || $" . (count($params) + 1) . "% OR student_id ILIKE '%' || $" . (count($params) + 1) . "%)";
-    $params[] = $search;
+    $where[]  = "(full_name LIKE ? OR student_id LIKE ?)";
+    $params[] = '%' . $search . '%';
+    $params[] = '%' . $search . '%';
 }
 
 if ($role_filter !== 'all') {
-    $where[]  = "role = $" . (count($params) + 1);
+    $where[]  = "role = ?";
     $params[] = $role_filter;
 }
 
@@ -124,19 +115,10 @@ if ($notif_filter === 'on') {
 
 $where_sql = !empty($where) ? 'WHERE ' . implode(' AND ', $where) : '';
 
-$params[] = 100;
+$users_result = $pdo->prepare("SELECT user_id, full_name, student_id, role, email, email_notifications, status FROM users $where_sql ORDER BY full_name ASC LIMIT 100");
+$users_result->execute($params);
 
-$users_result = pg_query_params(
-    $conn,
-    "SELECT user_id, full_name, student_id, role, email, email_notifications, status
-     FROM users
-     $where_sql
-     ORDER BY full_name ASC
-     LIMIT $" . count($params),
-    $params
-);
-
-$users = $users_result ? pg_fetch_all($users_result) : array();
+$users = $users_result ? $users_result->fetchAll() : array();
 
 
 /*
@@ -145,17 +127,14 @@ $users = $users_result ? pg_fetch_all($users_result) : array();
 |--------------------------------------------------------------------------
 */
 
-$counts_result = pg_query(
-    $conn,
-    "SELECT
+$counts_result = $pdo->query("SELECT
          COUNT(*) AS total,
          SUM(CASE WHEN email_notifications = true THEN 1 ELSE 0 END) AS on_count,
          SUM(CASE WHEN email_notifications = false OR email_notifications IS NULL THEN 1 ELSE 0 END) AS off_count
      FROM users
-     WHERE role IN ('student', 'organizer', 'admin')"
-);
+     WHERE role IN ('student', 'organizer', 'admin')");
 
-$counts = pg_fetch_assoc($counts_result);
+$counts = $counts_result->fetch(PDO::FETCH_ASSOC);
 $total_users  = (int) ($counts['total']   ?? 0);
 $on_count     = (int) ($counts['on_count'] ?? 0);
 $off_count    = (int) ($counts['off_count'] ?? 0);
@@ -167,18 +146,9 @@ $off_count    = (int) ($counts['off_count'] ?? 0);
 |--------------------------------------------------------------------------
 */
 
-$unread_count = (int) pg_fetch_result(
-    pg_query_params(
-        $conn,
-        "SELECT COUNT(*)
-         FROM notifications
-         WHERE user_id = $1
-           AND is_read = false",
-        array($admin_id)
-    ),
-    0,
-    0
-);
+$stmt = $pdo->prepare("SELECT COUNT(*) FROM notifications WHERE user_id = ? AND is_read = false");
+$stmt->execute([$admin_id]);
+$unread_count = (int)$stmt->fetchColumn();
 
 $role_label  = 'Administrator';
 $page_title  = 'Email Notification Settings — RMC Events';
@@ -308,7 +278,7 @@ $active_page = 'admin_email_settings';
 
             <?php if (!empty($search) || $role_filter !== 'all' || $notif_filter !== 'all'): ?>
                 <a
-                    href="admin_email_settings.php"
+                        href="admin_email_settings.php"
                     class="border border-slate-200 px-4 py-2 rounded-xl text-sm text-slate-600 hover:bg-rmc-50 transition"
                 >
                     <?= t('clear'); ?>
@@ -411,37 +381,43 @@ $active_page = 'admin_email_settings';
                                 <?php endif; ?>
                             </td>
 
-                            <td class="px-6 py-5 text-center">
-                                <form method="POST" style="display:inline;">
-                                    <?= csrf_field(); ?>
-                                    <input type="hidden" name="toggle_email_notif" value="<?= (int) $row['user_id']; ?>">
+<td class="px-6 py-5 text-center">
 
-                                    <?php if ($email_on): ?>
+                                    <form method="POST">
+                                        <?= csrf_field(); ?>
 
-                                        <button
-                                            type="button"
-                                            class="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-xl text-xs font-semibold transition"
-                                            title="Disable email notifications"
-                                            onclick="openConfirmModal({form: this.closest('form'), title: 'Disable Email Notifications', message: 'Disable email notifications for this user? They will no longer receive email alerts.', itemName: <?= json_encode(htmlspecialchars($row['full_name'], ENT_QUOTES)) ?>, itemLabel: 'user', actionText: 'Disable', color: 'red', icon: 'fa-solid fa-envelope-circle-xmark'});"
-                                        >
-                                            <i class="fa-solid fa-bell-slash mr-1"></i> Disable
-                                        </button>
+                                        <input
+                                            type="hidden"
+                                            name="toggle_email_notif"
+                                            value="<?= (int) $row['user_id']; ?>"
+                                            aria-label="User ID for email notification toggle"
+                                        />
 
-                                    <?php else: ?>
+                                        <?php if ($email_on): ?>
 
-                                        <button
-                                            type="button"
-                                            class="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-xl text-xs font-semibold transition"
-                                            title="Enable email notifications"
-                                            onclick="openConfirmModal({form: this.closest('form'), title: 'Enable Email Notifications', message: 'Enable email notifications for this user? They will receive email alerts for registrations, approvals, and reminders.', itemName: <?= json_encode(htmlspecialchars($row['full_name'], ENT_QUOTES)) ?>, itemLabel: 'user', actionText: 'Enable', color: 'emerald', icon: 'fa-solid fa-envelope-circle-check'});"
-                                        >
-                                            <i class="fa-solid fa-bell mr-1"></i> Enable
-                                        </button>
+                                            <button
+                                                type="button"
+                                                class="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-xl text-xs font-semibold transition"
+                                                title="Disable email notifications"
+                                                onclick="openConfirmModal({form: this.closest('form'), title: 'Disable Email Notifications', message: 'Disable email notifications for this user? They will no longer receive email alerts.', itemName: 'user', actionText: 'Disable', color: 'red', icon: 'fa-solid fa-envelope-circle-xmark'});"
+                                            >
+                                                <i class="fa-solid fa-bell-slash mr-1"></i> Disable
+                                            </button>
 
-                                    <?php endif; ?>
+                                        <?php else: ?>
 
-                                </form>
-                            </td>
+                                            <button
+                                                type="button"
+                                                class="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-xl text-xs font-semibold transition"
+                                                title="Enable email notifications"
+                                                onclick="openConfirmModal({form: this.closest('form'), title: 'Enable Email Notifications', message: 'Enable email notifications for this user? They will receive email alerts for registrations, approvals, and reminders.', itemName: 'user', actionText: 'Enable', color: 'emerald', icon: 'fa-solid fa-envelope-circle-check'});"
+                                            >
+                                                <i class="fa-solid fa-bell mr-1"></i> Enable
+                                            </button>
+
+                                        <?php endif; ?>
+                                    </form>
+                                </td>
 
                         </tr>
 

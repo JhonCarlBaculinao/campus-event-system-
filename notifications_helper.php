@@ -1,424 +1,213 @@
 <?php
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
 
 /*
 |--------------------------------------------------------------------------
 | NOTIFICATIONS HELPER
-|--------------------------------------------------------------------------
-| This file handles BOTH:
-|
-| 1. Website notifications
-| 2. Gmail/email notifications
-|
-| Notifications are role-based.
+| Handles website notifications AND Gmail/email notifications.
 |--------------------------------------------------------------------------
 */
 
 require_once 'send_email.php';
 
+/*
+|--------------------------------------------------------------------------
+| Helper: treat 't', '1', 1, true as "on" (covers Postgres->MySQL mix)
+|--------------------------------------------------------------------------
+*/
+function rmc_pref_is_on($value): bool
+{
+    return in_array($value, ['t', '1', 1, true], true);
+}
+
+/*
+|--------------------------------------------------------------------------
+| Generate a random temporary password (organizer approval, etc.)
+|--------------------------------------------------------------------------
+*/
+function rmc_generate_temp_password($length = 10)
+{
+    $chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789'; // no 0/O/1/l/I
+    $max = strlen($chars) - 1;
+    $password = '';
+    for ($i = 0; $i < $length; $i++) {
+        $password .= $chars[random_int(0, $max)];
+    }
+    return $password;
+}
 
 /*
 |--------------------------------------------------------------------------
 | Notify ONE user
 |--------------------------------------------------------------------------
 */
-function notify_user(
-    $conn,
-    $user_id,
-    $message,
-    $type,
-    $email_subject = null,
-    $email_html = null,
-    $force_email = false
-) {
+function notify_user($conn, $user_id, $message, $type, $email_subject = null, $email_html = null, $force_email = false)
+{
+    global $pdo;
 
-    // Get user information
-    $user_result = pg_query_params(
-        $conn,
+    $stmt = $pdo->prepare(
         "SELECT user_id, full_name, email, email_notifications
          FROM users
-         WHERE user_id = $1",
-        array($user_id)
+         WHERE user_id = ?"
     );
-
-    if (!$user_result) {
-        return false;
-    }
-
-    $user = pg_fetch_assoc($user_result);
+    $stmt->execute([$user_id]);
+    $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
     if (!$user) {
         return false;
     }
 
-
-    /*
-    |--------------------------------------------------------------------------
-    | WEBSITE NOTIFICATION
-    |--------------------------------------------------------------------------
-    */
-
-    $notification_result = pg_query_params(
-        $conn,
-        "INSERT INTO notifications
-        (user_id, message, type, is_read)
-        VALUES
-        ($1, $2, $3, FALSE)",
-        array(
-            $user_id,
-            $message,
-            $type
-        )
+    // Website notification
+    $notif_stmt = $pdo->prepare(
+        "INSERT INTO notifications (user_id, message, type, is_read)
+         VALUES (?, ?, ?, 0)"
     );
+    $notification_result = $notif_stmt->execute([$user_id, $message, $type]);
 
+    // Email notification
+    $email_on = rmc_pref_is_on($user['email_notifications'] ?? 'f');
 
-    /*
-    |--------------------------------------------------------------------------
-    | EMAIL NOTIFICATION
-    |--------------------------------------------------------------------------
-    | Check email_notifications preference unless forced (e.g. password reset,
-    | account verification, 2FA codes).
-    |--------------------------------------------------------------------------
-    */
+    if (($force_email || $email_on) && !empty($user['email'])) {
 
-    $email_on = ($user['email_notifications'] ?? 'f') === 't';
-
-    if ($force_email || $email_on) {
-        if (!empty($user['email'])) {
-
-            if ($email_subject === null) {
-                $email_subject = 'Regis Marie College - Campus Event Notification';
-            }
-
-            if ($email_html === null) {
-
-                $email_html =
-                    '<!DOCTYPE html>
-                    <html>
-                    <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-
-                        <h2>Hello ' .
-                        htmlspecialchars($user['full_name']) .
-                        '!</h2>
-
-                        <p>' .
-                        htmlspecialchars($message) .
-                        '</p>
-
-                        <hr>
-
-                        <p>
-                            <strong>Regis Marie College</strong><br>
-                            Campus Event Management System
-                        </p>
-
-                    </body>
-                    </html>';
-            }
-
-            send_email_deferred(
-                $user['email'],
-                $email_subject,
-                $email_html
-            );
+        if ($email_subject === null) {
+            $email_subject = 'Regis Marie College - Campus Event Notification';
         }
+
+        if ($email_html === null) {
+            $email_html =
+                '<!DOCTYPE html><html><body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+                    <h2>Hello ' . htmlspecialchars($user['full_name']) . '!</h2>
+                    <p>' . htmlspecialchars($message) . '</p>
+                    <hr>
+                    <p><strong>Regis Marie College</strong><br>Campus Event Management System</p>
+                 </body></html>';
+        }
+
+        send_notification_email($user['email'], $email_subject, $email_html);
     }
 
     return $notification_result !== false;
 }
-
 
 /*
 |--------------------------------------------------------------------------
 | Notify ALL users
 |--------------------------------------------------------------------------
 */
-function notify_all_users(
-    $conn,
-    $message,
-    $type,
-    $email_subject = null,
-    $email_html_template = null
-) {
+function notify_all_users($conn, $message, $type, $email_subject = null, $email_html_template = null)
+{
+    global $pdo;
 
-    $users = pg_query(
-        $conn,
-        "SELECT user_id, full_name, email, email_notifications
-         FROM users
-         ORDER BY user_id"
+    $users = $pdo->query(
+        "SELECT user_id, full_name, email, email_notifications FROM users ORDER BY user_id"
     );
 
     if (!$users) {
         return false;
     }
 
+    while ($user = $users->fetch(PDO::FETCH_ASSOC)) {
 
-    while ($user = pg_fetch_assoc($users)) {
+        $pdo->prepare(
+            "INSERT INTO notifications (user_id, message, type, is_read) VALUES (?, ?, ?, 0)"
+        )->execute([$user['user_id'], $message, $type]);
 
-        /*
-        |--------------------------------------------------------------------------
-        | Website notification
-        |--------------------------------------------------------------------------
-        */
-
-        pg_query_params(
-            $conn,
-            "INSERT INTO notifications
-            (user_id, message, type, is_read)
-            VALUES
-            ($1, $2, $3, FALSE)",
-            array(
-                $user['user_id'],
-                $message,
-                $type
-            )
-        );
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | Email notification
-        |--------------------------------------------------------------------------
-        */
-
-        $email_on = ($user['email_notifications'] ?? 'f') === 't';
+        $email_on = rmc_pref_is_on($user['email_notifications'] ?? 'f');
 
         if ($email_on && !empty($user['email'])) {
 
-            $subject = $email_subject;
-
-            if ($subject === null) {
-                $subject = 'Regis Marie College - Campus Event Notification';
-            }
-
+            $subject = $email_subject ?? 'Regis Marie College - Campus Event Notification';
 
             if ($email_html_template !== null) {
-
                 $email_html = str_replace(
-                    array(
-                        '{FULL_NAME}',
-                        '{MESSAGE}'
-                    ),
-                    array(
-                        htmlspecialchars($user['full_name']),
-                        htmlspecialchars($message)
-                    ),
+                    ['{FULL_NAME}', '{MESSAGE}'],
+                    [htmlspecialchars($user['full_name']), htmlspecialchars($message)],
                     $email_html_template
                 );
-
             } else {
-
                 $email_html =
-                    '<h2>Hello ' .
-                    htmlspecialchars($user['full_name']) .
-                    '!</h2>
-
-                    <p>' .
-                    htmlspecialchars($message) .
-                    '</p>
-
-                    <hr>
-
-                    <p>
-                        <strong>Regis Marie College</strong><br>
-                        Campus Event Management System
-                    </p>';
+                    '<h2>Hello ' . htmlspecialchars($user['full_name']) . '!</h2>
+                     <p>' . htmlspecialchars($message) . '</p>
+                     <hr>
+                     <p><strong>Regis Marie College</strong><br>Campus Event Management System</p>';
             }
 
-
-            send_email_deferred(
-                $user['email'],
-                $subject,
-                $email_html
-            );
+            send_notification_email($user['email'], $subject, $email_html);
         }
     }
 
     return true;
 }
-
 
 /*
 |--------------------------------------------------------------------------
 | Notify users by ROLE
 |--------------------------------------------------------------------------
 */
-function notify_role(
-    $conn,
-    $role,
-    $message,
-    $type,
-    $email_subject = null,
-    $email_html_template = null
-) {
+function notify_role($conn, $role, $message, $type, $email_subject = null, $email_html_template = null)
+{
+    global $pdo;
 
-    $users = pg_query_params(
-        $conn,
+    $stmt = $pdo->prepare(
         "SELECT user_id, full_name, email, email_notifications
          FROM users
-         WHERE role = $1
-         ORDER BY user_id",
-        array($role)
+         WHERE role = ?
+         ORDER BY user_id"
     );
+    $stmt->execute([$role]);
+    $users = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-    if (!$users) {
-        return false;
-    }
+    foreach ($users as $user) {
 
+        $pdo->prepare(
+            "INSERT INTO notifications (user_id, message, type, is_read) VALUES (?, ?, ?, 0)"
+        )->execute([$user['user_id'], $message, $type]);
 
-    while ($user = pg_fetch_assoc($users)) {
-
-        /*
-        |--------------------------------------------------------------------------
-        | Website notification
-        |--------------------------------------------------------------------------
-        */
-
-        pg_query_params(
-            $conn,
-            "INSERT INTO notifications
-            (user_id, message, type, is_read)
-            VALUES
-            ($1, $2, $3, FALSE)",
-            array(
-                $user['user_id'],
-                $message,
-                $type
-            )
-        );
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | Gmail notification
-        |--------------------------------------------------------------------------
-        */
-
-        $email_on = ($user['email_notifications'] ?? 'f') === 't';
+        $email_on = rmc_pref_is_on($user['email_notifications'] ?? 'f');
 
         if ($email_on && !empty($user['email'])) {
 
-            $subject = $email_subject;
-
-            if ($subject === null) {
-                $subject = 'Regis Marie College - Campus Event Notification';
-            }
-
+            $subject = $email_subject ?? 'Regis Marie College - Campus Event Notification';
 
             if ($email_html_template !== null) {
-
                 $email_html = str_replace(
-                    array(
-                        '{FULL_NAME}',
-                        '{MESSAGE}'
-                    ),
-                    array(
-                        htmlspecialchars($user['full_name']),
-                        htmlspecialchars($message)
-                    ),
+                    ['{FULL_NAME}', '{MESSAGE}'],
+                    [htmlspecialchars($user['full_name']), htmlspecialchars($message)],
                     $email_html_template
                 );
-
             } else {
-
                 $email_html =
-                    '<h2>Hello ' .
-                    htmlspecialchars($user['full_name']) .
-                    '!</h2>
-
-                    <p>' .
-                    htmlspecialchars($message) .
-                    '</p>
-
-                    <hr>
-
-                    <p>
-                        <strong>Regis Marie College</strong><br>
-                        Campus Event Management System
-                    </p>';
+                    '<h2>Hello ' . htmlspecialchars($user['full_name']) . '!</h2>
+                     <p>' . htmlspecialchars($message) . '</p>
+                     <hr>
+                     <p><strong>Regis Marie College</strong><br>Campus Event Management System</p>';
             }
 
-
-            send_email_deferred(
-                $user['email'],
-                $subject,
-                $email_html
-            );
+            send_notification_email($user['email'], $subject, $email_html);
         }
     }
 
     return true;
 }
 
-
 /*
 |--------------------------------------------------------------------------
-| Notify ALL STUDENTS
+| Role shortcuts
 |--------------------------------------------------------------------------
 */
-function notify_students(
-    $conn,
-    $message,
-    $type,
-    $email_subject = null,
-    $email_html_template = null
-) {
-
-    return notify_role(
-        $conn,
-        'student',
-        $message,
-        $type,
-        $email_subject,
-        $email_html_template
-    );
+function notify_students($conn, $message, $type, $email_subject = null, $email_html_template = null)
+{
+    return notify_role($conn, 'student', $message, $type, $email_subject, $email_html_template);
 }
 
-
-/*
-|--------------------------------------------------------------------------
-| Notify ALL ORGANIZERS
-|--------------------------------------------------------------------------
-*/
-function notify_organizers(
-    $conn,
-    $message,
-    $type,
-    $email_subject = null,
-    $email_html_template = null
-) {
-
-    return notify_role(
-        $conn,
-        'organizer',
-        $message,
-        $type,
-        $email_subject,
-        $email_html_template
-    );
+function notify_organizers($conn, $message, $type, $email_subject = null, $email_html_template = null)
+{
+    return notify_role($conn, 'organizer', $message, $type, $email_subject, $email_html_template);
 }
 
-
-/*
-|--------------------------------------------------------------------------
-| Notify ALL ADMINS
-|--------------------------------------------------------------------------
-*/
-function notify_admins(
-    $conn,
-    $message,
-    $type,
-    $email_subject = null,
-    $email_html_template = null
-) {
-
-    return notify_role(
-        $conn,
-        'admin',
-        $message,
-        $type,
-        $email_subject,
-        $email_html_template
-    );
+function notify_admins($conn, $message, $type, $email_subject = null, $email_html_template = null)
+{
+    return notify_role($conn, 'admin', $message, $type, $email_subject, $email_html_template);
 }
-
-?>
