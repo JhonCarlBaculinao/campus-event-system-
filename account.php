@@ -360,9 +360,16 @@ try {
 
                 $error = t('gmail_only_msg');
 
-            } elseif (strlen($password) < 8) {
+            } elseif (
+                $signup_role === 'student' &&
+                !in_array($department, rmc_departments(), true)
+            ) {
 
-                $error = t('password_min_msg');
+                $error = t('select_valid_department');
+
+            } elseif (rmc_password_policy_error($password) !== null) {
+
+                $error = rmc_password_policy_message();
 
             } elseif ($password !== $confirm_password) {
 
@@ -1117,7 +1124,7 @@ $register_blurb      = rmc_display_text('register_hero_blurb', 'Create your stud
                             <select name="department" id="deptSelect" required>
                                 <option value=""><?= t('select_department'); ?></option>
                                 <?php
-                                $departments = ['BS Computer Science', 'BS Information Technology', 'BSOA - Office Administration', 'BS Education'];
+                                $departments = rmc_departments();
                                 $selected_dept = $form_action === 'register' ? ($_POST['department'] ?? '') : '';
                                 foreach ($departments as $dept):
                                 ?>
@@ -1133,7 +1140,10 @@ $register_blurb      = rmc_display_text('register_hero_blurb', 'Create your stud
                         <label><?= t('password'); ?></label>
                         <div class="rmc-field-row">
                             <i class="fa-solid fa-lock rmc-field-icon"></i>
-                            <input type="password" name="password" id="regPassword" required minlength="8" autocomplete="new-password"
+                            <input type="password" name="password" id="regPassword" required minlength="8"
+                                pattern="(?=.*[A-Z])(?=.*[a-z])(?=.*[0-9])(?=.*[^A-Za-z0-9]).{8,}"
+                                title="Password must be at least 8 characters and contain at least one uppercase letter, one lowercase letter, one number, and one special symbol."
+                                autocomplete="new-password"
                                 placeholder="<?= t('password_min_hint'); ?>">
                             <i class="fa-solid fa-eye rmc-pwd-eye" data-target="regPassword"></i>
                         </div>
@@ -1143,13 +1153,17 @@ $register_blurb      = rmc_display_text('register_hero_blurb', 'Create your stud
                         <label><?= t('confirm_password'); ?></label>
                         <div class="rmc-field-row">
                             <i class="fa-solid fa-lock rmc-field-icon"></i>
-                            <input type="password" name="confirm_password" id="regConfirmPassword" required minlength="8" autocomplete="new-password"
+                            <input type="password" name="confirm_password" id="regConfirmPassword" required minlength="8"
+                                pattern="(?=.*[A-Z])(?=.*[a-z])(?=.*[0-9])(?=.*[^A-Za-z0-9]).{8,}"
+                                title="Password must be at least 8 characters and contain at least one uppercase letter, one lowercase letter, one number, and one special symbol."
+                                autocomplete="new-password"
                                 placeholder="<?= t('placeholder_confirm_password'); ?>">
                             <i class="fa-solid fa-eye rmc-pwd-eye" data-target="regConfirmPassword"></i>
                         </div>
                     </div>
 
                     <p class="text-[0.68rem] text-gray-400"><?= t('verification_code_hint'); ?></p>
+                    <p class="text-[0.68rem] text-gray-500"><?= htmlspecialchars(rmc_password_policy_message(), ENT_QUOTES, 'UTF-8'); ?></p>
 
                     <button type="submit" class="rmc-submit w-full py-3 rounded-xl text-white font-bold text-sm transition duration-300">
                         <?= t('create_account'); ?>

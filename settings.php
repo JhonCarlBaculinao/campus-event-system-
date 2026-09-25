@@ -62,12 +62,7 @@ if (isset($_GET['twofa'])) {
 |--------------------------------------------------------------------------
 */
 
-$departments = [
-    "BS Computer Science",
-    "BS Information Technology",
-    "BSOA - Office Administration",
-    "BS Education"
-];
+$departments = rmc_departments();
 
 /*
 |--------------------------------------------------------------------------
@@ -524,9 +519,9 @@ $update->execute([
 
             $error = t('current_password_incorrect');
 
-        } elseif (strlen($new_password) < 8) {
+        } elseif (rmc_password_policy_error($new_password) !== null) {
 
-            $error = t('new_password_min_msg');
+            $error = rmc_password_policy_message();
 
         } elseif ($new_password !== $confirm_password) {
 
@@ -1071,6 +1066,8 @@ $active_page = 'settings';
                 name="new_password"
                 required
                 minlength="8"
+                pattern="(?=.*[A-Z])(?=.*[a-z])(?=.*[0-9])(?=.*[^A-Za-z0-9]).{8,}"
+                title="Password must be at least 8 characters and contain at least one uppercase letter, one lowercase letter, one number, and one special symbol."
                 autocomplete="new-password"
                 placeholder="<?= t('password_min_hint'); ?>"
                 class="w-full mt-2 border border-slate-200 rounded-2xl px-4 py-3 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-rmc-300 focus:border-rmc-300 outline-none transition"
@@ -1090,11 +1087,17 @@ $active_page = 'settings';
                 name="confirm_password"
                 required
                 minlength="8"
+                pattern="(?=.*[A-Z])(?=.*[a-z])(?=.*[0-9])(?=.*[^A-Za-z0-9]).{8,}"
+                title="Password must be at least 8 characters and contain at least one uppercase letter, one lowercase letter, one number, and one special symbol."
                 autocomplete="new-password"
                 class="w-full mt-2 border border-slate-200 rounded-2xl px-4 py-3 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-rmc-300 focus:border-rmc-300 outline-none transition"
             >
 
         </div>
+
+        <p class="text-xs text-slate-500">
+            <?= htmlspecialchars(rmc_password_policy_message(), ENT_QUOTES, 'UTF-8'); ?>
+        </p>
 
 
         <button

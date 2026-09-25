@@ -40,8 +40,8 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
         $error = 'Please fill in all fields.';
     } elseif (!password_verify($current_password, $user['password'])) {
         $error = 'Your current password is incorrect.';
-    } elseif (strlen($new_password) < 8) {
-        $error = 'New password must be at least 8 characters long.';
+    } elseif (rmc_password_policy_error($new_password) !== null) {
+        $error = rmc_password_policy_message();
     } elseif ($new_password !== $confirm_password) {
         $error = 'New password and confirmation do not match.';
     } elseif (password_verify($new_password, $user['password'])) {
@@ -125,10 +125,12 @@ $page_title = 'Change Password — RMC Events';
                     id="new_password"
                     required
                     minlength="8"
+                    pattern="(?=.*[A-Z])(?=.*[a-z])(?=.*[0-9])(?=.*[^A-Za-z0-9]).{8,}"
+                    title="<?= htmlspecialchars(rmc_password_policy_message(), ENT_QUOTES, 'UTF-8'); ?>"
                     autocomplete="new-password"
                     class="mt-2 w-full rounded-xl border border-slate-200 px-5 py-3 bg-slate-50 focus:bg-white focus:ring-4 focus:ring-rmc-200 focus:border-rmc-300 outline-none transition"
                 >
-                <p class="text-xs text-slate-400 mt-1">At least 8 characters.</p>
+                <p class="text-xs text-slate-400 mt-1"><?= htmlspecialchars(rmc_password_policy_message(), ENT_QUOTES, 'UTF-8'); ?></p>
             </div>
 
             <div>
@@ -141,6 +143,8 @@ $page_title = 'Change Password — RMC Events';
                     id="confirm_password"
                     required
                     minlength="8"
+                    pattern="(?=.*[A-Z])(?=.*[a-z])(?=.*[0-9])(?=.*[^A-Za-z0-9]).{8,}"
+                    title="<?= htmlspecialchars(rmc_password_policy_message(), ENT_QUOTES, 'UTF-8'); ?>"
                     autocomplete="new-password"
                     class="mt-2 w-full rounded-xl border border-slate-200 px-5 py-3 bg-slate-50 focus:bg-white focus:ring-4 focus:ring-rmc-200 focus:border-rmc-300 outline-none transition"
                 >

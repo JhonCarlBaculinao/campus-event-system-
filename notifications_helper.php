@@ -25,17 +25,33 @@ function rmc_pref_is_on($value): bool
 /*
 |--------------------------------------------------------------------------
 | Generate a random temporary password (organizer approval, etc.)
+| Guarantees the password satisfies the shared application policy
+| (>= 8 chars, at least one uppercase, one lowercase, one digit and one
+| special symbol). Character set omits 0/O/1/l/I for readability.
 |--------------------------------------------------------------------------
 */
 function rmc_generate_temp_password($length = 10)
 {
-    $chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789'; // no 0/O/1/l/I
-    $max = strlen($chars) - 1;
-    $password = '';
-    for ($i = 0; $i < $length; $i++) {
-        $password .= $chars[random_int(0, $max)];
+    if ($length < 8) {
+        $length = 8;
     }
-    return $password;
+
+    $upper = 'ABCDEFGHJKLMNPQRSTUVWXYZ'; // no O/I
+    $lower = 'abcdefghijkmnopqrstuvwxyz'; // no l/i
+    $digits = '23456789'; // no 0/1
+    $symbols = '@#$%&*!?';
+
+    $password = $upper[random_int(0, strlen($upper) - 1)]
+        . $lower[random_int(0, strlen($lower) - 1)]
+        . $digits[random_int(0, strlen($digits) - 1)]
+        . $symbols[random_int(0, strlen($symbols) - 1)];
+
+    $all = $upper . $lower . $digits . $symbols;
+    for ($i = strlen($password); $i < $length; $i++) {
+        $password .= $all[random_int(0, strlen($all) - 1)];
+    }
+
+    return str_shuffle($password);
 }
 
 /*

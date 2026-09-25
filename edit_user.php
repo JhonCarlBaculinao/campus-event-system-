@@ -44,12 +44,7 @@ if ($target_id <= 0) {
 |--------------------------------------------------------------------------
 */
 
-$departments = [
-    "BS Computer Science",
-    "BS Information Technology",
-    "BSOA - Office Administration",
-    "BS Education"
-];
+$departments = rmc_departments();
 
 /*
 |--------------------------------------------------------------------------
@@ -118,9 +113,9 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
 
         $error = t('department_required_student');
 
-    } elseif (!empty($new_password) && strlen($new_password) < 8) {
+    } elseif (!empty($new_password) && rmc_password_policy_error($new_password) !== null) {
 
-        $error = t('new_password_min_msg');
+        $error = rmc_password_policy_message();
 
     }
 
@@ -653,6 +648,8 @@ $active_page = '';
                 type="password"
                 name="new_password"
                 minlength="8"
+                pattern="(?=.*[A-Z])(?=.*[a-z])(?=.*[0-9])(?=.*[^A-Za-z0-9]).{8,}"
+                title="Password must be at least 8 characters and contain at least one uppercase letter, one lowercase letter, one number, and one special symbol."
                 autocomplete="new-password"
                 placeholder="<?= t('leave_blank_keep_password'); ?>"
                 class="mt-2 w-full rounded-xl border border-slate-200 px-5 py-3 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-rmc-300 focus:border-rmc-300 outline-none transition"
@@ -661,6 +658,12 @@ $active_page = '';
             <p class="text-sm text-slate-500 mt-2">
 
                 <?= t('leave_blank_desc'); ?>
+
+            </p>
+
+            <p class="text-sm text-slate-500 mt-1">
+
+                <?= htmlspecialchars(rmc_password_policy_message(), ENT_QUOTES, 'UTF-8'); ?>
 
             </p>
 

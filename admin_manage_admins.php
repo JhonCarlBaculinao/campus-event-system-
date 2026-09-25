@@ -40,15 +40,7 @@ if (
     $department = trim($_POST['department'] ?? '');
     $email      = trim($_POST['email'] ?? '');
 
-    $valid_departments = [
-        'BS Computer Science',
-        'BS Information Technology',
-        'BSOA - Office Administration',
-        'BS Education',
-        'Analytics',
-        'Engineering',
-        'Business',
-    ];
+    $valid_departments = rmc_departments();
 
     if (
         $full_name === '' ||
@@ -76,18 +68,9 @@ if (
 
         $error = t('select_valid_department');
 
-    } elseif (strlen($password) < 12) {
+    } elseif (rmc_password_policy_error($password) !== null) {
 
-        $error = 'Password must be at least 12 characters.';
-
-    } elseif (
-        !preg_match('/[A-Z]/', $password) ||
-        !preg_match('/[a-z]/', $password) ||
-        !preg_match('/[0-9]/', $password) ||
-        !preg_match('/[^A-Za-z0-9]/', $password)
-    ) {
-
-        $error = 'Password must include uppercase, lowercase, number, and special character.';
+        $error = rmc_password_policy_message();
 
     } else {
 
@@ -381,15 +364,7 @@ $role_label  = 'Administrator';
 $page_title  = 'Manage Admins — RMC Events';
 $active_page = 'admin_manage_admins';
 
-$valid_departments = [
-    'BS Computer Science',
-    'BS Information Technology',
-    'BSOA - Office Administration',
-    'BS Education',
-    'Analytics',
-    'Engineering',
-    'Business',
-];
+$valid_departments = rmc_departments();
 
 ?>
 <?php include 'partials/head.php'; ?>
@@ -582,14 +557,16 @@ $valid_departments = [
                     type="password"
                     id="password"
                     name="password"
-                    placeholder="Min 12 characters"
+                    placeholder="At least 8 characters"
                     required
-                    minlength="12"
+                    minlength="8"
+                    pattern="(?=.*[A-Z])(?=.*[a-z])(?=.*[0-9])(?=.*[^A-Za-z0-9]).{8,}"
+                    title="Password must be at least 8 characters and contain at least one uppercase letter, one lowercase letter, one number, and one special symbol."
                     class="border border-slate-200 rounded-xl px-4 py-2.5 w-full bg-slate-50 focus:bg-white focus:ring-2 focus:ring-rmc-300 focus:border-rmc-300 outline-none transition"
                 >
 
                 <p class="text-xs text-slate-400 mt-1">
-                    Must include uppercase, lowercase, number, and special character.
+                    Password must be at least 8 characters and contain at least one uppercase letter, one lowercase letter, one number, and one special symbol.
                 </p>
 
             </div>

@@ -96,9 +96,9 @@ if (
     $password = $_POST['password'] ?? '';
     $confirm_password = $_POST['confirm_password'] ?? '';
 
-    if (strlen($password) < 8) {
+    if (rmc_password_policy_error($password) !== null) {
 
-        $error = t('password_min_msg');
+        $error = rmc_password_policy_message();
 
     } elseif ($password !== $confirm_password) {
 
@@ -239,6 +239,8 @@ if (
                         name="password"
                         required
                         minlength="8"
+                        pattern="(?=.*[A-Z])(?=.*[a-z])(?=.*[0-9])(?=.*[^A-Za-z0-9]).{8,}"
+                        title="Password must be at least 8 characters and contain at least one uppercase letter, one lowercase letter, one number, and one special symbol."
                         autocomplete="new-password"
                         class="mt-2 w-full rounded-xl border border-slate-200 px-5 py-3 bg-slate-50 focus:bg-white focus:ring-4 focus:ring-rmc-200 focus:border-rmc-300 outline-none transition"
                     >
@@ -260,11 +262,17 @@ if (
                         name="confirm_password"
                         required
                         minlength="8"
+                        pattern="(?=.*[A-Z])(?=.*[a-z])(?=.*[0-9])(?=.*[^A-Za-z0-9]).{8,}"
+                        title="Password must be at least 8 characters and contain at least one uppercase letter, one lowercase letter, one number, and one special symbol."
                         autocomplete="new-password"
                         class="mt-2 w-full rounded-xl border border-slate-200 px-5 py-3 bg-slate-50 focus:bg-white focus:ring-4 focus:ring-rmc-200 focus:border-rmc-300 outline-none transition"
                     >
 
                 </div>
+
+                <p class="text-xs text-slate-400">
+                    Password must be at least 8 characters and contain at least one uppercase letter, one lowercase letter, one number, and one special symbol.
+                </p>
 
                 <div class="flex items-center gap-2">
 

@@ -502,6 +502,64 @@ if (!function_exists('status_badge')) {
     }
 }
 
+/*
+|--------------------------------------------------------------------------
+| SHARED PASSWORD POLICY & DEPARTMENT REFERENCE
+|--------------------------------------------------------------------------
+| Single source of truth for the application-wide password policy and the
+| canonical department list, so every form, validator, and filter behaves
+| identically.
+|--------------------------------------------------------------------------
+*/
+
+if (!function_exists('rmc_password_policy_error')) {
+
+    /*
+    | Returns null when the password satisfies the policy; otherwise returns
+    | a machine-readable reason ('short' | 'upper' | 'lower' | 'number' |
+    | 'special'). The caller decides how to phrase the message.
+    */
+    function rmc_password_policy_error($password)
+    {
+        $password = (string) $password;
+
+        if (strlen($password) < 8) {
+            return 'short';
+        }
+        if (!preg_match('/[A-Z]/', $password)) {
+            return 'upper';
+        }
+        if (!preg_match('/[a-z]/', $password)) {
+            return 'lower';
+        }
+        if (!preg_match('/[0-9]/', $password)) {
+            return 'number';
+        }
+        if (!preg_match('/[^A-Za-z0-9]/', $password)) {
+            return 'special';
+        }
+
+        return null;
+    }
+
+    function rmc_password_policy_message()
+    {
+        return 'Password must be at least 8 characters and contain at least one uppercase letter, one lowercase letter, one number, and one special symbol.';
+    }
+
+    function rmc_departments()
+    {
+        return array(
+            'College of Computer Studies',
+            'College of Business and Office Administration',
+            'College of Teacher Education',
+            'College of Criminology',
+            'College of Multimedia Arts',
+            'Senior High School',
+        );
+    }
+}
+
 rmc_hydrate_role_session();
 rmc_enforce_session_token($pdo);
 
