@@ -3,3 +3,6 @@ email_config.local.php
 .env
 .env.*
 !.env.example
+
+# Local database dumps (never commit)
+*.sql
